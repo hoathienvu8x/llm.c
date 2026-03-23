@@ -3,6 +3,51 @@
 
 #include <math.h>
 
+void rms_norm(tensor_t *ln, tensor_t *tmp_mat, const tensor_t *weight)
+{
+	for (size_t i = 0; i < tensor_len(tmp_mat); i++) {
+		tensor_t row;
+
+		tensor_at(tmp_mat, i, &row);
+
+		vector_t s;
+		vector_set(&s, 0);
+
+		size_t len = tensor_len(&row);
+
+		for (size_t j = 0; j < vector_batches(len); j += VECTOR_BATCH) {
+			vector_t tmp;
+
+			vector_load(&tmp, &row.data[j]);
+			vector_mul(&tmp, &tmp, &tmp);
+			vector_add(&s, &s, &tmp);
+		}
+		scalar_t sum = vector_reduce_sum(&s);
+		for (size_t j = vector_batches(len); j < len; j++)
+			sum += row.data[j] * row.data[j];
+
+		scalar_t rms = sqrtf(sum / len + 1e-5f);
+
+		vector_t vrms;
+		vector_set(&vrms, rms);
+
+		for (size_t j = 0; j < vector_batches(len); j += VECTOR_BATCH) {
+			vector_t tmp;
+
+			vector_load(&tmp, &row.data[j]);
+			vector_div(&tmp, &tmp, &vrms);
+			vector_store(&row.data[j], &tmp);
+		}
+		for (size_t j = vector_batches(len); j < len; j++)
+			row.data[j] = row.data[j] / rms;
+
+		tensor_t ln_row;
+		tensor_at(ln, i, &ln_row);
+
+		tensor_mul(&ln_row, &row, weight);
+	}
+}
+
 void layer_norm(
 	tensor_t *ln,
 	tensor_t *tmp_mat,
@@ -115,6 +160,58 @@ void gelua(tensor_t *t)
 
 		inp = t->data[i];
 		t->data[i] = 0.5 * inp * (1.0 + tanhf(GELU_K1 * inp * (1.0 + GELU_K2 * inp * inp)));
+	}
+}
+
+void silu(tensor_t *t)
+{
+	for (size_t i = 0; i < vector_batches(t->totlen); i += VECTOR_BATCH) {
+		vector_t vinp, vneg, vexp, vone, vdenom;
+
+		vector_load(&vinp, &t->data[i]);
+
+		/* sigmoid(x) = 1 / (1 + exp(-x)) */
+		vector_set(&vone, 1.0);
+		vector_set(&vneg, 0);
+		vector_sub(&vneg, &vneg, &vinp); /* -x */
+		vector_exp(&vexp, &vneg);        /* exp(-x) */
+		vector_add(&vdenom, &vone, &vexp); /* 1 + exp(-x) */
+		vector_div(&vdenom, &vinp, &vdenom); /* x / (1 + exp(-x)) */
+
+		vector_store(&t->data[i], &vdenom);
+	}
+
+	for (size_t i = vector_batches(t->totlen); i < t->totlen; i++) {
+		scalar_t x = t->data[i];
+		t->data[i] = x / (1.0f + expf(-x));
+	}
+}
+
+void rope_apply(tensor_t *t, int pos, size_t head_len, float theta)
+{
+	/* t is (H, HLEN), apply RoPE to each head */
+	assert(t->ndim == 2);
+	size_t H = t->dim[0];
+	size_t HLEN = t->dim[1];
+	assert(HLEN == head_len);
+
+	size_t half = HLEN / 2;
+
+	for (size_t h = 0; h < H; h++) {
+		scalar_t *head = &t->data[h * HLEN];
+
+		for (size_t i = 0; i < half; i++) {
+			float freq = 1.0f / powf(theta, (float)(2 * i) / (float)HLEN);
+			float angle = (float)pos * freq;
+			float cos_a = cosf(angle);
+			float sin_a = sinf(angle);
+
+			scalar_t x0 = head[i];
+			scalar_t x1 = head[i + half];
+
+			head[i]        = x0 * cos_a - x1 * sin_a;
+			head[i + half] = x0 * sin_a + x1 * cos_a;
+		}
 	}
 }
 

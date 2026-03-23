@@ -20,9 +20,12 @@ BLAS_LDFLAGS=-lopenblas
 #LIBS+=-lsleef
 
 O=3
-MODEL?=gpt2
 
-CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. -Imodels/$(MODEL) -O$(O) -march=native -rdynamic
+MODEL_DIRS=$(wildcard models/*)
+MODEL_CFLAGS=$(addprefix -I,$(MODEL_DIRS))
+MODEL_SRCS=$(wildcard models/*/*.c)
+
+CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. $(MODEL_CFLAGS) -O$(O) -march=native -rdynamic
 LDFLAGS=$(SLEEF_LDFLAGS) $(BLAS_LDFLAGS)
 CC=clang
 
@@ -38,7 +41,7 @@ all:
 	./llmc gpt2_$(M).gguf In the morning I was able to
 
 build:
-	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c models/$(MODEL)/$(MODEL).c model.c nn.c kvcache.c gguf.c vocab.c tensor.c quant.c profiler.c $(LIBS) -o llmc
+	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c tensor.c quant.c profiler.c $(LIBS) -o llmc
 
 check:
 	$(MAKE) build
@@ -53,6 +56,8 @@ check:
 	diff models/gpt2/test/expected_$(M)-Q8_0.txt models/gpt2/test/got_$(M)-Q8_0.txt
 	SRAND48_SEED=1337 ./llmc gpt2_$(M)-Q4_K_S.gguf < models/gpt2/test/prefill_$(M).txt > models/gpt2/test/got_$(M)-Q4_K_S.txt
 	diff models/gpt2/test/expected_$(M)-Q4_K_S.txt models/gpt2/test/got_$(M)-Q4_K_S.txt
+	SRAND48_SEED=1337 ./llmc olmoe-1b-7b-q4_k_m.gguf < models/olmoe/test/prefill.txt > models/olmoe/test/got_q4_k_m.txt
+	diff models/olmoe/test/expected_q4_k_m.txt models/olmoe/test/got_q4_k_m.txt
 
 flamegraph:
 	$(MAKE) build O=0
