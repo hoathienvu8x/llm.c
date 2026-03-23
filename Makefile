@@ -36,9 +36,13 @@ M=124M
 
 FG=/home/sdf/src/FlameGraph
 
-all:
-	$(MAKE) build
-	./llmc gpt2_$(M).gguf In the morning I was able to
+SEED=SRAND48_SEED=1337
+
+all: download check
+
+download:
+	test -f gpt2_$(M).gguf || models/gpt2/download_gguf.sh
+	test -f olmoe-1b-7b-q4_k_m.gguf || models/olmoe/download_gguf.sh
 
 build:
 	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c tensor.c quant.c profiler.c $(LIBS) -o llmc
@@ -50,20 +54,19 @@ check:
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/nn.c tensor.c quant.c nn.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/gguf.c gguf.c tensor.c quant.c $(LIBS) && ./a.out gpt2_$(M).gguf
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/quant.c tensor.c quant.c $(LIBS) && ./a.out
-	SRAND48_SEED=1337 ./llmc gpt2_$(M).gguf < models/gpt2/test/prefill_$(M).txt > models/gpt2/test/got_$(M).txt
-	diff models/gpt2/test/expected_$(M).txt models/gpt2/test/got_$(M).txt
-	SRAND48_SEED=1337 ./llmc gpt2_$(M)-Q8_0.gguf < models/gpt2/test/prefill_$(M).txt > models/gpt2/test/got_$(M)-Q8_0.txt
-	diff models/gpt2/test/expected_$(M)-Q8_0.txt models/gpt2/test/got_$(M)-Q8_0.txt
-	SRAND48_SEED=1337 ./llmc gpt2_$(M)-Q4_K_S.gguf < models/gpt2/test/prefill_$(M).txt > models/gpt2/test/got_$(M)-Q4_K_S.txt
-	diff models/gpt2/test/expected_$(M)-Q4_K_S.txt models/gpt2/test/got_$(M)-Q4_K_S.txt
-	SRAND48_SEED=1337 ./llmc olmoe-1b-7b-q4_k_m.gguf < models/olmoe/test/prefill.txt > models/olmoe/test/got_q4_k_m.txt
-	diff models/olmoe/test/expected_q4_k_m.txt models/olmoe/test/got_q4_k_m.txt
+	@for expected in models/*/test/expected_*.txt; do \
+		dir=$${expected%/test/*}; \
+		variant=$$(basename $$expected .txt | sed 's/^expected_//'); \
+		gguf=$$(ls *$$variant.gguf 2>/dev/null | head -1); \
+		prefill=$$(ls $$dir/test/prefill*.txt | head -1); \
+		got=$$dir/test/got_$$variant.txt; \
+		echo "Testing $$gguf..."; \
+		$(SEED) ./llmc $$gguf < $$prefill > $$got && \
+		diff $$expected $$got || exit 1; \
+	done
 
 flamegraph:
 	$(MAKE) build O=0
 	perf record -F 99 -g -- ./llmc gpt2_$(M).gguf In the morning I was able to
 	perf script | $(FG)/stackcollapse-perf.pl > out.perf-folded
 	$(FG)/flamegraph.pl out.perf-folded > perf.svg
-
-eval:
-	models/gpt2/eval.py ~/src/gpt-2/pytorch_$(M)
