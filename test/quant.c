@@ -1,4 +1,5 @@
 #include "tensor.h"
+#include "matmul.h"
 #include "quant.h"
 
 #include <stdbool.h>

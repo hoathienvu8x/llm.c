@@ -1,4 +1,5 @@
 #include "tensor.h"
+#include "matmul.h"
 
 #include <stdbool.h>
 #include "test/test.h"
@@ -187,6 +188,182 @@ static void test_ft_mma(void)
 	tensor_eq_str(ret, "[[+6.72e+03 +1.53e+04 +2.41e+04][+4.89e+04 +1.08e+05 +1.67e+05]]");
 }
 
+static void fill_sequential(float *data, size_t n)
+{
+	for (size_t i = 0; i < n; i++)
+		data[i] = (float)(i % 17) - 8.0f;
+}
+
+static void assert_close(const float *a, const float *b, size_t n,
+			  float tol, const char *label)
+{
+	for (size_t i = 0; i < n; i++) {
+		float diff = a[i] - b[i];
+		if (diff < 0) diff = -diff;
+		if (diff > tol) {
+			printf("%s: mismatch at %zu: %f vs %f (diff %f)\n",
+			       label, i, a[i], b[i], diff);
+			assert(false);
+		}
+	}
+}
+
+static void test_mma_tp_sizes(void)
+{
+	/* Test various M, K, N sizes including edge cases:
+	 * - K not multiple of VECTOR_BATCH
+	 * - N < NR (8), M < MR (4)
+	 * - Single row/col
+	 */
+	struct { size_t M, K, N; } sizes[] = {
+		{1, 1, 1},
+		{1, 3, 1},
+		{1, 3, 5},
+		{2, 4, 3},
+		{3, 7, 2},      /* K=7, odd, not vector-aligned */
+		{1, 17, 3},     /* K=17, tests scalar tail */
+		{4, 8, 8},      /* exactly MR x NR */
+		{5, 16, 9},     /* M > MR, N > NR */
+		{1, 32, 1},     /* GEMV single output */
+		{1, 64, 16},    /* GEMV wide */
+		{8, 33, 10},    /* K=33, not power of 2 */
+		{16, 64, 32},   /* larger, clean sizes */
+	};
+	int nsizes = sizeof(sizes) / sizeof(sizes[0]);
+
+	for (int s = 0; s < nsizes; s++) {
+		size_t M = sizes[s].M, K = sizes[s].K, N = sizes[s].N;
+
+		/* non-transposed: ret = lhs[M,K] @ rhs[K,N] */
+		tensor_t *lhs = tensor_new_zero(2, M, K);
+		tensor_t *rhs = tensor_new_zero(2, K, N);
+		tensor_t *ret_tp = tensor_new_zero(2, M, N);
+		tensor_t *ret_naive = tensor_new_zero(2, M, N);
+		fill_sequential(lhs->data, M * K);
+		fill_sequential(rhs->data, K * N);
+
+		tensor_mma_2x2_naive(ret_naive, lhs, rhs, NULL);
+		tensor_mma_2x2_tp(ret_tp, lhs, rhs, NULL);
+
+		char label[64];
+		snprintf(label, sizeof(label),
+			 "nontrans %zux%zu @ %zux%zu", M, K, K, N);
+		assert_close(ret_tp->data, ret_naive->data,
+			     M * N, 1e-4f, label);
+
+		/* with bias */
+		tensor_t *bias = tensor_new_zero(1, N);
+		fill_sequential(bias->data, N);
+
+		tensor_mma_2x2_naive(ret_naive, lhs, rhs, bias);
+		tensor_mma_2x2_tp(ret_tp, lhs, rhs, bias);
+		snprintf(label, sizeof(label),
+			 "nontrans+bias %zux%zu", M, N);
+		assert_close(ret_tp->data, ret_naive->data,
+			     M * N, 1e-4f, label);
+
+		tensor_free(lhs);
+		tensor_free(rhs);
+		tensor_free(ret_tp);
+		tensor_free(ret_naive);
+		tensor_free(bias);
+
+		/* transposed: ret = lhs[M,K] @ rhs[N,K].T */
+		lhs = tensor_new_zero(2, M, K);
+		tensor_t *rhs_t = tensor_new_zero(2, N, K);
+		ret_tp = tensor_new_zero(2, M, N);
+		ret_naive = tensor_new_zero(2, M, N);
+		fill_sequential(lhs->data, M * K);
+		fill_sequential(rhs_t->data, N * K);
+
+		tensor_mma_transposed_2x2_naive(ret_naive, lhs, rhs_t, NULL);
+		tensor_mma_transposed_2x2_tp(ret_tp, lhs, rhs_t, NULL);
+
+		snprintf(label, sizeof(label),
+			 "trans %zux%zu @ %zux%zu.T", M, K, N, K);
+		assert_close(ret_tp->data, ret_naive->data,
+			     M * N, 1e-4f, label);
+
+		/* with full add matrix */
+		tensor_t *add_mat = tensor_new_zero(2, M, N);
+		fill_sequential(add_mat->data, M * N);
+
+		tensor_mma_transposed_2x2_naive(ret_naive, lhs, rhs_t, add_mat);
+		tensor_mma_transposed_2x2_tp(ret_tp, lhs, rhs_t, add_mat);
+		snprintf(label, sizeof(label),
+			 "trans+add %zux%zu", M, N);
+		assert_close(ret_tp->data, ret_naive->data,
+			     M * N, 1e-4f, label);
+
+		tensor_free(lhs);
+		tensor_free(rhs_t);
+		tensor_free(ret_tp);
+		tensor_free(ret_naive);
+		tensor_free(add_mat);
+	}
+}
+
+#ifdef USE_CBLAS
+static void test_mma_tp_vs_cblas(void)
+{
+	/* Cross-validate _tp against _cblas for several sizes */
+	struct { size_t M, K, N; } sizes[] = {
+		{1, 32, 16},
+		{4, 64, 32},
+		{8, 33, 10},
+		{16, 64, 64},
+	};
+	int nsizes = sizeof(sizes) / sizeof(sizes[0]);
+
+	for (int s = 0; s < nsizes; s++) {
+		size_t M = sizes[s].M, K = sizes[s].K, N = sizes[s].N;
+
+		/* non-transposed */
+		tensor_t *lhs = tensor_new_zero(2, M, K);
+		tensor_t *rhs = tensor_new_zero(2, K, N);
+		tensor_t *ret_tp = tensor_new_zero(2, M, N);
+		tensor_t *ret_cblas = tensor_new_zero(2, M, N);
+		fill_sequential(lhs->data, M * K);
+		fill_sequential(rhs->data, K * N);
+
+		tensor_mma_2x2_tp(ret_tp, lhs, rhs, NULL);
+		tensor_mma_2x2_cblas(ret_cblas, lhs, rhs, NULL);
+
+		char label[64];
+		snprintf(label, sizeof(label),
+			 "tp_vs_cblas nontrans %zux%zu", M, N);
+		assert_close(ret_tp->data, ret_cblas->data,
+			     M * N, 1e-4f, label);
+
+		tensor_free(lhs);
+		tensor_free(rhs);
+		tensor_free(ret_tp);
+		tensor_free(ret_cblas);
+
+		/* transposed */
+		lhs = tensor_new_zero(2, M, K);
+		tensor_t *rhs_t = tensor_new_zero(2, N, K);
+		ret_tp = tensor_new_zero(2, M, N);
+		ret_cblas = tensor_new_zero(2, M, N);
+		fill_sequential(lhs->data, M * K);
+		fill_sequential(rhs_t->data, N * K);
+
+		tensor_mma_transposed_2x2_tp(ret_tp, lhs, rhs_t, NULL);
+		tensor_mma_transposed_2x2_cblas(ret_cblas, lhs, rhs_t, NULL);
+
+		snprintf(label, sizeof(label),
+			 "tp_vs_cblas trans %zux%zu", M, N);
+		assert_close(ret_tp->data, ret_cblas->data,
+			     M * N, 1e-4f, label);
+
+		tensor_free(lhs);
+		tensor_free(rhs_t);
+		tensor_free(ret_tp);
+		tensor_free(ret_cblas);
+	}
+}
+#endif
+
 static void test_ft_max(void)
 {
 	size_t pos = 0;
@@ -261,6 +438,10 @@ int main(int argc, char *argv[])
 	test_ft_mul();
 	test_ft_div();
 	test_ft_mma();
+	test_mma_tp_sizes();
+#ifdef USE_CBLAS
+	test_mma_tp_vs_cblas();
+#endif
 	test_ft_max();
 	printf("ft: ok\n");
 	bench_ft_mma_transposed(1000);

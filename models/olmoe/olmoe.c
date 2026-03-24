@@ -1,5 +1,6 @@
 #include "olmoe.h"
 #include "nn.h"
+#include "matmul.h"
 #include "gguf.h"
 #include "vocab.h"
 #include "kvcache.h"

@@ -10,12 +10,29 @@ typedef float scalar_t;
 #include "simd_avx512.h"
 
 #if defined(__AVX512F__)
+
+/* https://github.com/flame/blis/blob/master/kernels/skx/3/bli_dgemm_skx_asm_16x12_l2.c */
+#define MMA_MR 16
+#define MMA_NR 12
+
 typedef avx512_vector_t vector_t;
 #define VECTOR_BATCH AVX512_BATCH
+
 #elif defined(__AVX2__)
+
+/* https://github.com/flame/blis/blob/master/kernels/haswell/3/bli_gemmtrsm_l_haswell_asm_d6x8.c */
+#define MMA_MR 6
+#define MMA_NR 8
+
 typedef avx2_vector_t vector_t;
 #define VECTOR_BATCH AVX2_BATCH
+
 #else
+
+/* https://github.com/flame/blis/blob/master/kernels/sandybridge/3/bli_gemm_sandybridge_asm_d8x4.c */
+#define MMA_MR 8
+#define MMA_NR 4
+
 typedef cpu_vector_t vector_t;
 #define VECTOR_BATCH CPU_BATCH
 #endif

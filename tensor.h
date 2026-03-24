@@ -198,15 +198,3 @@ void tensor_div_scalar(
 scalar_t tensor_mean(const tensor_t *lhs);
 scalar_t tensor_max(const tensor_t *lhs, size_t *pos);
 
-/* ret = lhs @ rhs + add */
-void tensor_mma_2x2(
-	tensor_t *ret,
-	const tensor_t *lhs,
-	const tensor_t *rhs,
-	const tensor_t *add);
-/* ret = lhs @ rhs.T + add */
-void tensor_mma_transposed_2x2(
-	tensor_t *ret,
-	const tensor_t *lhs,
-	const tensor_t *rhs,
-	const tensor_t *add);
