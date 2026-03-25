@@ -126,12 +126,57 @@ static char *bpe_decode(const char *token)
 	return out;
 }
 
+/*
+ * SentencePiece (Llama/Mixtral) token decoding:
+ *   - ▁ (U+2581) maps to space
+ *   - <0xNN> maps to raw byte value NN
+ *   - Everything else is literal UTF-8
+ */
+static char *spm_decode(const char *token)
+{
+	size_t len = strlen(token);
+	char *out = malloc(len + 1);
+	size_t pos = 0;
+
+	const uint8_t *p = (const uint8_t *)token;
+	while (*p) {
+		/* ▁ is U+2581, encoded as E2 96 81 in UTF-8 */
+		if (p[0] == 0xe2 && p[1] == 0x96 && p[2] == 0x81) {
+			out[pos++] = ' ';
+			p += 3;
+		} else if (p[0] == '<' && p[1] == '0' && p[2] == 'x'
+			   && len >= 6 && p[5] == '>') {
+			/* <0xNN> byte escape */
+			unsigned val = 0;
+			for (int i = 3; i < 5; i++) {
+				val <<= 4;
+				if (p[i] >= '0' && p[i] <= '9')
+					val |= p[i] - '0';
+				else if (p[i] >= 'A' && p[i] <= 'F')
+					val |= p[i] - 'A' + 10;
+				else if (p[i] >= 'a' && p[i] <= 'f')
+					val |= p[i] - 'a' + 10;
+			}
+			out[pos++] = (char)val;
+			p += 6;
+		} else {
+			out[pos++] = *p++;
+		}
+	}
+	out[pos] = '\0';
+
+	return out;
+}
+
 static struct vocab_ht *vocab_ht_build(struct gguf *g)
 {
 	size_t n = gguf_get_arr_n(g, VOCAB_KEY);
 	size_t cap = 1;
 	while (cap < 2 * n)
 		cap <<= 1;
+
+	const char *tok_model = gguf_get_str(g, "tokenizer.ggml.model");
+	int is_spm = tok_model && strcmp(tok_model, "llama") == 0;
 
 	struct vocab_ht *ht = malloc(sizeof(*ht));
 	ht->buckets = calloc(cap, sizeof(struct vocab_entry));
@@ -142,7 +187,7 @@ static struct vocab_ht *vocab_ht_build(struct gguf *g)
 
 	for (size_t i = 0; i < n; i++) {
 		const char *tok = gguf_get_arr_str(g, VOCAB_KEY, i);
-		ht->decoded[i] = bpe_decode(tok);
+		ht->decoded[i] = is_spm ? spm_decode(tok) : bpe_decode(tok);
 		int slen = strlen(ht->decoded[i]);
 
 		if (slen > ht->max_token_len)
