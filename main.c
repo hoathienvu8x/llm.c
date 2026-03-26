@@ -1,6 +1,7 @@
 #include "model.h"
 #include "gguf.h"
 #include "vocab.h"
+#include "prompt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,9 +180,14 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "failed to load model\n");
 		return EXIT_FAILURE;
 	}
+
+	struct chat_template *tmpl = chat_template_load(g);
+
+	char *inp = NULL;
+
 	if (argc == 2 && !isatty(fileno(stdin))) {
 		size_t cap = 4096, len = 0;
-		char *inp = malloc(cap);
+		inp = malloc(cap);
 		assert(inp);
 		size_t n;
 		while ((n = fread(inp + len, 1, cap - len, stdin)) > 0) {
@@ -193,9 +199,6 @@ int main(int argc, char *argv[])
 			}
 		}
 		inp[len] = '\0';
-
-		m->generate(ctx, inp, 250, on_token, g);
-		free(inp);
 	} else if (argc >= 3) {
 		size_t sz = 0;
 		for (int i = 2; i < argc; i++) {
@@ -203,7 +206,7 @@ int main(int argc, char *argv[])
 			sz += 1; /* space */
 		}
 
-		char *inp = malloc(sz + 1 /* \0 */);
+		inp = malloc(sz + 1);
 		assert(inp);
 		inp[0] = '\0';
 
@@ -212,9 +215,17 @@ int main(int argc, char *argv[])
 				strcat(inp, " ");
 			strcat(inp, argv[i]);
 		}
-
-		m->generate(ctx, inp, 500, on_token, g);
 	}
+
+	if (inp) {
+		char *prompt = chat_template_apply(tmpl, inp);
+		m->generate(ctx, prompt, 250, on_token, g);
+		if (prompt != inp)
+			free(prompt);
+		free(inp);
+	}
+
+	chat_template_free(tmpl);
 	m->close(ctx);
 	gguf_close(g);
 }

@@ -73,6 +73,7 @@ struct olmoe {
 		size_t expert_intermediate;
 	};
 
+	int bos_id;
 	scalar_t hlen_sq;
 	float rope_theta;
 
@@ -137,6 +138,7 @@ void *olmoe_load(struct gguf *g)
 	model->top_k_experts = gguf_get_uint32(g, "olmoe.expert_used_count");
 	model->expert_intermediate = gguf_get_uint32(g, "olmoe.feed_forward_length");
 	model->rope_theta = gguf_get_float32(g, "olmoe.rope.freq_base");
+	model->bos_id = gguf_get_uint32(g, "tokenizer.ggml.bos_token_id");
 
 	size_t C = model->context;
 	size_t HLEN = model->head_len;
@@ -536,6 +538,12 @@ void olmoe_generate(void *ctx, const char *text, int num, pick_token_t f, void *
 
 	int T = 0;
 	int tok;
+
+	/* BOS token from GGUF metadata */
+	toks[T] = model->bos_id;
+	poss[T] = T;
+	T++;
+
 	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
 		printf("%.*s", tok_sz, text);
 		text += tok_sz;

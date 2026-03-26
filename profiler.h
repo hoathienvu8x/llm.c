@@ -55,8 +55,8 @@ static inline void profiler_report(void)
 			continue;
 
 		val = profiler_points[i];
-		printf("%.9fs %s\n", profiler_to_sec(val), profiler_names[i]);
+		fprintf(stderr, "%.9fs %s\n", profiler_to_sec(val), profiler_names[i]);
 		total += val;
 	}
-	printf("total=%fs\n", profiler_to_sec(total));
+	fprintf(stderr, "total=%fs\n", profiler_to_sec(total));
 }
