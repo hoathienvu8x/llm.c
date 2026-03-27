@@ -24,6 +24,7 @@ struct gpt2 {
 		size_t vocab_len; /* vocabulary size */
 	};
 
+	int pos;
 	scalar_t hlen_sq;
 
 	const tensor_t *wte;
@@ -418,7 +419,6 @@ void gpt2_generate(void *ctx, const char *text, int num, pick_token_t f, void *c
 	tensor_t *output = model->state.output;
 	tensor_t *logits = model->state.logits;
 
-	/* tokenize the entire prompt first */
 	int *toks = malloc(C * sizeof(int));
 	int *poss = malloc(C * sizeof(int));
 	assert(toks && poss);
@@ -426,21 +426,18 @@ void gpt2_generate(void *ctx, const char *text, int num, pick_token_t f, void *c
 	int T = 0;
 	int tok;
 	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
-		printf("%.*s", tok_sz, text);
 		text += tok_sz;
-		assert(T < (int)C);
+		assert(model->pos + T < (int)C);
 		toks[T] = tok;
-		poss[T] = T;
+		poss[T] = model->pos + T;
 		T++;
 	}
-	fflush(stdout);
 
-	/* batch prefill: run the entire prompt in one forward pass */
 	uint64_t prefill_begin = profiler_now();
 	gpt2_prefill(model, toks, poss, T, output);
 	uint64_t prefill_end = profiler_now();
 
-	int pos = T;
+	model->pos += T;
 
 	tensor_t last_row;
 	tensor_at(output, T - 1, &last_row);
@@ -450,14 +447,13 @@ void gpt2_generate(void *ctx, const char *text, int num, pick_token_t f, void *c
 	tensor_reshape_2d(&last_row, 1, E);
 	tensor_mma_transposed_2x2(logits, &last_row, model->wte, NULL);
 	tensor_reshape_1d(logits, model->vocab_len);
-	/* pass raw logits; the sampling callback handles its own softmax */
 	tok = f(cb_ctx, logits);
 
 	uint64_t decode_begin = profiler_now();
 	uint64_t batch_begin = decode_begin;
 	while (num--) {
-		gpt2_decode(model, tok, pos, output);
-		pos++;
+		gpt2_decode(model, tok, model->pos, output);
+		model->pos++;
 
 		tensor_at(output, 0, &last_row);
 		tensor_assert_1d(logits, model->vocab_len);
@@ -466,12 +462,11 @@ void gpt2_generate(void *ctx, const char *text, int num, pick_token_t f, void *c
 		tensor_reshape_2d(&last_row, 1, E);
 		tensor_mma_transposed_2x2(logits, &last_row, model->wte, NULL);
 		tensor_reshape_1d(logits, model->vocab_len);
-		/* pass raw logits; the sampling callback handles its own softmax */
 		tok = f(cb_ctx, logits);
 
-		if (pos && pos % 100 == 0) {
+		if (model->pos && model->pos % 100 == 0) {
 			uint64_t end = profiler_now();
-			fprintf(stderr, "[%d tokens, %.9f tok/sec]", pos, (100/profiler_to_sec(end-batch_begin)));
+			fprintf(stderr, "[%d tokens, %.9f tok/sec]", model->pos, (100/profiler_to_sec(end-batch_begin)));
 			batch_begin = end;
 		}
 	}

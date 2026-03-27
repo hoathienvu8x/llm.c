@@ -16,14 +16,6 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
-static size_t pick_greedy(tensor_t *logits)
-{
-	size_t token;
-
-	tensor_max(logits, &token);
-	return token;
-}
-
 static void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 {
 	assert(k <= f->totlen);
@@ -58,94 +50,144 @@ static void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 	}
 }
 
-static size_t pick_top_k(tensor_t *logits, size_t k)
+static size_t on_token(void *ctx, tensor_t *logits)
 {
-	size_t top_n[k];
-	scalar_t top_v[k];
+	struct gguf *g = ctx;
+	size_t top_n[5];
+	scalar_t top_v[5];
 
-	top_k(logits, &top_n[0], &top_v[0], k);
+	top_k(logits, top_n, top_v, 5);
 
 	scalar_t max = top_v[0];
-	for (size_t i = 0; i < k; i++) {
+	for (size_t i = 0; i < 5; i++)
 		if (top_v[i] > max)
 			max = top_v[i];
-	}
 
 	scalar_t sum = 0;
-	for (size_t i = 0; i < k; i++) {
+	for (size_t i = 0; i < 5; i++) {
 		top_v[i] = expf(top_v[i] - max);
 		sum += top_v[i];
 	}
-
-	for (size_t i = 0; i < k; i++)
-		top_v[i] = top_v[i] / sum;
+	for (size_t i = 0; i < 5; i++)
+		top_v[i] /= sum;
 
 	scalar_t rem = drand48();
-
 	size_t idx = 0;
-	for (int i = k - 1; i >= 0; i--) {
+	for (int i = 4; i >= 0; i--) {
 		if (rem > top_v[i]) {
 			rem -= top_v[i];
 			continue;
 		}
-
 		idx = i;
 		break;
 	}
 
-	return top_n[idx];
-}
-
-static size_t on_token(void *ctx, tensor_t *logits)
-{
-	struct gguf *g = ctx;
-	const char *s;
-	size_t token;
-
-#if 0
-	token = pick_greedy(logits);
-#else
-	token = pick_top_k(logits, 5);
-#endif
-
-	s = vocab_encode(g, token);
-	printf("%s", s);
+	size_t token = top_n[idx];
+	printf("%s", vocab_encode(g, token));
 	fflush(stdout);
-
 	return token;
 }
 
-void bt(int sig)
+static void bt(int sig)
 {
 	void *buf[256];
-	char **sym;
-	int num;
-
-	num = backtrace(buf, ARRAY_SIZE(buf));
-	sym = backtrace_symbols(buf, num);
+	int num = backtrace(buf, ARRAY_SIZE(buf));
+	char **sym = backtrace_symbols(buf, num);
 	if (!sym)
 		return;
 
-	printf("\n");
-	printf("Ugh, I'm done, see the backtrace below.\n");
-	printf("You can use the following command to find the faulty location in the source code:\n");
-	printf("$ addr2line -e ./llmc -i <func>+<offset>\n");
-	printf("\n");
-
-	for (int i = 0; i < num; i++) {
+	printf("\nUgh, I'm done, see the backtrace below.\n");
+	printf("$ addr2line -e ./llmc -i <func>+<offset>\n\n");
+	for (int i = 0; i < num; i++)
 		printf("%s\n", sym[i]);
-	}
 	free(sym);
+}
 
+static char *read_stdin(void)
+{
+	size_t cap = 4096, len = 0;
+	char *buf = malloc(cap);
+	assert(buf);
+
+	size_t n;
+	while ((n = fread(buf + len, 1, cap - len, stdin)) > 0) {
+		len += n;
+		if (len == cap) {
+			cap *= 2;
+			buf = realloc(buf, cap);
+			assert(buf);
+		}
+	}
+	buf[len] = '\0';
+	return buf;
+}
+
+static char *join_args(int argc, char **argv)
+{
+	size_t sz = 0;
+	for (int i = 0; i < argc; i++)
+		sz += strlen(argv[i]) + 1;
+
+	char *buf = malloc(sz + 1);
+	assert(buf);
+	buf[0] = '\0';
+
+	for (int i = 0; i < argc; i++) {
+		if (i > 0)
+			strcat(buf, " ");
+		strcat(buf, argv[i]);
+	}
+	return buf;
+}
+
+static void generate(const struct model *m, void *ctx,
+		     struct chat_template *tmpl, struct gguf *g,
+		     const char *input, int max_tokens)
+{
+	char *prompt = chat_template_apply(tmpl, input);
+	m->generate(ctx, prompt, max_tokens, on_token, g);
+	free(prompt);
+}
+
+static void chat_loop(const struct model *m, void *ctx,
+		      struct chat_template *tmpl, struct gguf *g)
+{
+	char line[4096];
+
+	printf("> ");
+	fflush(stdout);
+	while (fgets(line, sizeof(line), stdin)) {
+		size_t len = strlen(line);
+		if (len > 0 && line[len - 1] == '\n')
+			line[--len] = '\0';
+		if (len == 0) {
+			printf("> ");
+			fflush(stdout);
+			continue;
+		}
+
+		generate(m, ctx, tmpl, g, line, 500);
+		printf("\n> ");
+		fflush(stdout);
+	}
+	printf("\n");
+}
+
+static void seed_rng(void)
+{
+	const char *env = getenv("SRAND48_SEED");
+	if (env) {
+		srand48(atoi(env));
+		return;
+	}
+
+	struct timespec ts = {};
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	srand48(ts.tv_sec * 1000000000 + ts.tv_nsec);
 }
 
 int main(int argc, char *argv[])
 {
-	const struct model *m;
-	struct gguf *g;
-	const char *model_name;
-	void *ctx;
-
 	signal(SIGABRT, bt);
 
 	if (argc < 2) {
@@ -154,28 +196,22 @@ int main(int argc, char *argv[])
 	}
 
 	fprintf(stderr, "loading model from %s\n", argv[1]);
-	g = gguf_load(argv[1]);
+	struct gguf *g = gguf_load(argv[1]);
 	if (!g) {
 		fprintf(stderr, "failed to load model from '%s'\n", argv[1]);
 		return EXIT_FAILURE;
 	}
 
-	model_name = gguf_get_str(g, "general.architecture");
-	m = find_model(model_name);
+	const char *model_name = gguf_get_str(g, "general.architecture");
+	const struct model *m = find_model(model_name);
 	if (!m) {
 		fprintf(stderr, "unknown model '%s'\n", model_name);
 		return EXIT_FAILURE;
 	}
 
-	if (getenv("SRAND48_SEED")) {
-		srand48(atoi(getenv("SRAND48_SEED"))); /* reproducible output */
-	} else {
-		struct timespec ts = {};
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		srand48(ts.tv_sec * 1000000000 + ts.tv_nsec);
-	}
+	seed_rng();
 
-	ctx = m->load(g);
+	void *ctx = m->load(g);
 	if (!ctx) {
 		fprintf(stderr, "failed to load model\n");
 		return EXIT_FAILURE;
@@ -183,46 +219,16 @@ int main(int argc, char *argv[])
 
 	struct chat_template *tmpl = chat_template_load(g);
 
-	char *inp = NULL;
-
-	if (argc == 2 && !isatty(fileno(stdin))) {
-		size_t cap = 4096, len = 0;
-		inp = malloc(cap);
-		assert(inp);
-		size_t n;
-		while ((n = fread(inp + len, 1, cap - len, stdin)) > 0) {
-			len += n;
-			if (len == cap) {
-				cap *= 2;
-				inp = realloc(inp, cap);
-				assert(inp);
-			}
-		}
-		inp[len] = '\0';
-	} else if (argc >= 3) {
-		size_t sz = 0;
-		for (int i = 2; i < argc; i++) {
-			sz += strlen(argv[i]);
-			sz += 1; /* space */
-		}
-
-		inp = malloc(sz + 1);
-		assert(inp);
-		inp[0] = '\0';
-
-		for (int i = 2; i < argc; i++) {
-			if (i != 2)
-				strcat(inp, " ");
-			strcat(inp, argv[i]);
-		}
-	}
-
-	if (inp) {
-		char *prompt = chat_template_apply(tmpl, inp);
-		m->generate(ctx, prompt, 250, on_token, g);
-		if (prompt != inp)
-			free(prompt);
+	if (argc >= 3) {
+		char *inp = join_args(argc - 2, argv + 2);
+		generate(m, ctx, tmpl, g, inp, 250);
 		free(inp);
+	} else if (!isatty(fileno(stdin))) {
+		char *inp = read_stdin();
+		generate(m, ctx, tmpl, g, inp, 250);
+		free(inp);
+	} else {
+		chat_loop(m, ctx, tmpl, g);
 	}
 
 	chat_template_free(tmpl);

@@ -28,6 +28,8 @@ struct mixtral {
 	};
 
 	int bos_id;
+	int eos_id;
+	int pos;
 	scalar_t hlen_sq;
 	float rope_theta;
 
@@ -92,6 +94,7 @@ void *mixtral_load(struct gguf *g)
 	model->expert_intermediate = gguf_get_uint32(g, "llama.feed_forward_length");
 	model->rope_theta = gguf_get_float32(g, "llama.rope.freq_base");
 	model->bos_id = gguf_get_uint32(g, "tokenizer.ggml.bos_token_id");
+	model->eos_id = gguf_get_uint32(g, "tokenizer.ggml.eos_token_id");
 
 	size_t C = model->context;
 	size_t HLEN = model->head_len;
@@ -504,26 +507,25 @@ void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void
 	int T = 0;
 	int tok;
 
-	/* BOS token from GGUF metadata */
-	toks[T] = model->bos_id;
-	poss[T] = T;
-	T++;
-
-	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
-		printf("%.*s", tok_sz, text);
-		text += tok_sz;
-		assert(T < (int)C);
-		toks[T] = tok;
+	if (model->pos == 0) {
+		toks[T] = model->bos_id;
 		poss[T] = T;
 		T++;
 	}
-	fflush(stdout);
+
+	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
+		text += tok_sz;
+		assert(model->pos + T < (int)C);
+		toks[T] = tok;
+		poss[T] = model->pos + T;
+		T++;
+	}
 
 	uint64_t prefill_begin = profiler_now();
 	mixtral_prefill(model, toks, poss, T, output);
 	uint64_t prefill_end = profiler_now();
 
-	int pos = T;
+	model->pos += T;
 
 	tensor_t last_row;
 	tensor_at(output, T - 1, &last_row);
@@ -536,9 +538,9 @@ void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void
 
 	uint64_t decode_begin = profiler_now();
 	uint64_t batch_begin = decode_begin;
-	while (num--) {
-		mixtral_decode(model, tok, pos, output);
-		pos++;
+	while (num-- && tok != model->eos_id) {
+		mixtral_decode(model, tok, model->pos, output);
+		model->pos++;
 
 		tensor_at(output, 0, &last_row);
 		tensor_assert_1d(logits, model->vocab_len);
@@ -548,9 +550,9 @@ void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void
 		tensor_reshape_1d(logits, model->vocab_len);
 		tok = f(cb_ctx, logits);
 
-		if (pos && pos % 100 == 0) {
+		if (model->pos && model->pos % 100 == 0) {
 			uint64_t end = profiler_now();
-			fprintf(stderr, "[%d tokens, %.9f tok/sec]", pos, (100/profiler_to_sec(end-batch_begin)));
+			fprintf(stderr, "[%d tokens, %.9f tok/sec]", model->pos, (100/profiler_to_sec(end-batch_begin)));
 			batch_begin = end;
 		}
 	}
