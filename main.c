@@ -50,39 +50,79 @@ static void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 	}
 }
 
+static size_t recent_tokens[64];
+static int recent_count;
+
 static size_t on_token(void *ctx, tensor_t *logits)
 {
 	struct gguf *g = ctx;
-	size_t top_n[5];
-	scalar_t top_v[5];
+	size_t token;
+	float temperature = 0.7f;
+	float top_p = 0.9f;
+	float rep_penalty = 1.1f;
+	enum { K = 40 };
+	size_t top_n[K];
+	scalar_t top_v[K];
 
-	top_k(logits, top_n, top_v, 5);
+	/* Repetition penalty on raw logits */
+	for (int i = 0; i < recent_count; i++) {
+		size_t t = recent_tokens[i];
+		if (t < logits->totlen) {
+			if (logits->data[t] > 0)
+				logits->data[t] /= rep_penalty;
+			else
+				logits->data[t] *= rep_penalty;
+		}
+	}
 
-	scalar_t max = top_v[0];
-	for (size_t i = 0; i < 5; i++)
-		if (top_v[i] > max)
-			max = top_v[i];
+	top_k(logits, top_n, top_v, K);
 
+	/* Temperature scaling + softmax */
+	scalar_t max = top_v[K - 1];
 	scalar_t sum = 0;
-	for (size_t i = 0; i < 5; i++) {
-		top_v[i] = expf(top_v[i] - max);
+	for (size_t i = 0; i < K; i++) {
+		top_v[i] = expf((top_v[i] - max) / temperature);
 		sum += top_v[i];
 	}
-	for (size_t i = 0; i < 5; i++)
+	for (size_t i = 0; i < K; i++)
 		top_v[i] /= sum;
 
-	scalar_t rem = drand48();
-	size_t idx = 0;
-	for (int i = 4; i >= 0; i--) {
-		if (rem > top_v[i]) {
-			rem -= top_v[i];
-			continue;
+	/* Top-p (nucleus) filtering: zero out low-probability tail */
+	scalar_t cumsum = 0;
+	for (int i = K - 1; i >= 0; i--) {
+		cumsum += top_v[i];
+		if (cumsum > top_p) {
+			for (int j = i - 1; j >= 0; j--)
+				top_v[j] = 0;
+			break;
 		}
-		idx = i;
-		break;
 	}
 
-	size_t token = top_n[idx];
+	/* Re-normalize after top-p */
+	sum = 0;
+	for (size_t i = 0; i < K; i++)
+		sum += top_v[i];
+	for (size_t i = 0; i < K; i++)
+		top_v[i] /= sum;
+
+	/* Sample from distribution */
+	scalar_t rem = drand48();
+	token = top_n[K - 1];
+	for (int i = K - 1; i >= 0; i--) {
+		if (rem < top_v[i]) {
+			token = top_n[i];
+			break;
+		}
+		rem -= top_v[i];
+	}
+	/* Track recent tokens for repetition penalty */
+	if (recent_count < 64)
+		recent_tokens[recent_count++] = token;
+	else {
+		memmove(recent_tokens, recent_tokens + 1, 63 * sizeof(size_t));
+		recent_tokens[63] = token;
+	}
+
 	printf("%s", vocab_encode(g, token));
 	fflush(stdout);
 	return token;
@@ -144,6 +184,7 @@ static void generate(const struct model *m, void *ctx,
 		     struct chat_template *tmpl, struct gguf *g,
 		     const char *input, int max_tokens)
 {
+	recent_count = 0;
 	char *prompt = chat_template_apply(tmpl, input);
 	m->generate(ctx, prompt, max_tokens, on_token, g);
 	free(prompt);

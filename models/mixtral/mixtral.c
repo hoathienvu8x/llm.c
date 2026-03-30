@@ -89,8 +89,8 @@ void *mixtral_load(struct gguf *g)
 	model->layers = gguf_get_uint32(g, "llama.block_count");
 	model->head_len = model->embeddings / model->q_heads;
 	model->vocab_len = gguf_get_arr_n(g, "tokenizer.ggml.tokens");
-	model->num_experts = gguf_get_uint32(g, "llama.expert_count");
-	model->top_k_experts = gguf_get_uint32(g, "llama.expert_used_count");
+	model->num_experts = gguf_get_uint32_or(g, "llama.expert_count", 0);
+	model->top_k_experts = gguf_get_uint32_or(g, "llama.expert_used_count", 0);
 	model->expert_intermediate = gguf_get_uint32(g, "llama.feed_forward_length");
 	model->rope_theta = gguf_get_float32(g, "llama.rope.freq_base");
 	model->bos_id = gguf_get_uint32(g, "tokenizer.ggml.bos_token_id");
@@ -109,9 +109,14 @@ void *mixtral_load(struct gguf *g)
 	assert(QH * HLEN == E);
 	assert(QH % KVH == 0);
 
-	fprintf(stderr, "mixtral: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu NE=%zu topk=%zu EI=%zu theta=%.1f\n",
-	        C, E, QH, KVH, HLEN, model->layers, model->vocab_len,
-	        NE, model->top_k_experts, EI, model->rope_theta);
+	if (NE > 0)
+		fprintf(stderr, "llama: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu NE=%zu topk=%zu EI=%zu theta=%.1f\n",
+		        C, E, QH, KVH, HLEN, model->layers, model->vocab_len,
+		        NE, model->top_k_experts, EI, model->rope_theta);
+	else
+		fprintf(stderr, "llama: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu EI=%zu theta=%.1f\n",
+		        C, E, QH, KVH, HLEN, model->layers, model->vocab_len,
+		        EI, model->rope_theta);
 
 	model->hl = calloc(model->layers, sizeof(*model->hl));
 	assert(model->hl);
@@ -129,14 +134,23 @@ void *mixtral_load(struct gguf *g)
 		model->hl[i].o_weight = gguf_tensor_2d(g, E, QH * HLEN, "blk.%zu.attn_output.weight", i);
 
 		model->hl[i].ffn_norm = gguf_tensor_1d(g, E, "blk.%zu.ffn_norm.weight", i);
-		model->hl[i].gate_inp = gguf_tensor_2d(g, NE, E, "blk.%zu.ffn_gate_inp.weight", i);
-		model->hl[i].gate_exp = calloc(NE, sizeof(tensor_t *));
-		model->hl[i].up_exp = calloc(NE, sizeof(tensor_t *));
-		model->hl[i].down_exp = calloc(NE, sizeof(tensor_t *));
-		for (size_t e = 0; e < NE; e++) {
-			model->hl[i].gate_exp[e] = gguf_tensor_2d(g, EI, E, "blk.%zu.ffn_gate.%zu.weight", i, e);
-			model->hl[i].up_exp[e] = gguf_tensor_2d(g, EI, E, "blk.%zu.ffn_up.%zu.weight", i, e);
-			model->hl[i].down_exp[e] = gguf_tensor_2d(g, E, EI, "blk.%zu.ffn_down.%zu.weight", i, e);
+		if (NE > 0) {
+			model->hl[i].gate_inp = gguf_tensor_2d(g, NE, E, "blk.%zu.ffn_gate_inp.weight", i);
+			model->hl[i].gate_exp = calloc(NE, sizeof(tensor_t *));
+			model->hl[i].up_exp = calloc(NE, sizeof(tensor_t *));
+			model->hl[i].down_exp = calloc(NE, sizeof(tensor_t *));
+			for (size_t e = 0; e < NE; e++) {
+				model->hl[i].gate_exp[e] = gguf_tensor_2d(g, EI, E, "blk.%zu.ffn_gate.%zu.weight", i, e);
+				model->hl[i].up_exp[e] = gguf_tensor_2d(g, EI, E, "blk.%zu.ffn_up.%zu.weight", i, e);
+				model->hl[i].down_exp[e] = gguf_tensor_2d(g, E, EI, "blk.%zu.ffn_down.%zu.weight", i, e);
+			}
+		} else {
+			model->hl[i].gate_exp = calloc(1, sizeof(tensor_t *));
+			model->hl[i].up_exp = calloc(1, sizeof(tensor_t *));
+			model->hl[i].down_exp = calloc(1, sizeof(tensor_t *));
+			model->hl[i].gate_exp[0] = gguf_tensor_2d(g, EI, E, "blk.%zu.ffn_gate.weight", i);
+			model->hl[i].up_exp[0] = gguf_tensor_2d(g, EI, E, "blk.%zu.ffn_up.weight", i);
+			model->hl[i].down_exp[0] = gguf_tensor_2d(g, E, EI, "blk.%zu.ffn_down.weight", i);
 		}
 	}
 
@@ -150,10 +164,16 @@ void *mixtral_load(struct gguf *g)
 	model->state.masked_attn = tensor_new_zero(2, C, C);
 	model->state.attn = tensor_new_zero(2, C, E);
 	model->state.attn_residual = tensor_new_zero(2, C, E);
-	model->state.gate_logits = tensor_new_zero(2, C, NE);
-	model->state.expert_gate = tensor_new_zero(2, 1, EI);
-	model->state.expert_up = tensor_new_zero(2, 1, EI);
-	model->state.expert_out = tensor_new_zero(2, 1, E);
+	if (NE > 0) {
+		model->state.gate_logits = tensor_new_zero(2, C, NE);
+		model->state.expert_gate = tensor_new_zero(2, 1, EI);
+		model->state.expert_up = tensor_new_zero(2, 1, EI);
+		model->state.expert_out = tensor_new_zero(2, 1, E);
+	} else {
+		model->state.expert_gate = tensor_new_zero(2, C, EI);
+		model->state.expert_up = tensor_new_zero(2, C, EI);
+		model->state.expert_out = tensor_new_zero(2, C, E);
+	}
 	model->state.moe_out = tensor_new_zero(2, C, E);
 	model->state.logits = tensor_new_zero(1, model->vocab_len);
 
@@ -170,7 +190,8 @@ void *mixtral_load(struct gguf *g)
 	totmem += model->state.masked_attn->maxcap;
 	totmem += model->state.attn->maxcap;
 	totmem += model->state.attn_residual->maxcap;
-	totmem += model->state.gate_logits->maxcap;
+	if (model->state.gate_logits)
+		totmem += model->state.gate_logits->maxcap;
 	totmem += model->state.expert_gate->maxcap;
 	totmem += model->state.expert_up->maxcap;
 	totmem += model->state.expert_out->maxcap;
@@ -313,6 +334,23 @@ static void transformer(struct mixtral *model, tensor_t *q, tensor_t *k, tensor_
 	}
 }
 
+static void dense_ffn(struct mixtral *model, tensor_t *input, tensor_t *output, size_t l)
+{
+	struct mixtral_layer *hl = &model->hl[l];
+	tensor_t *gate = model->state.expert_gate;
+	tensor_t *up = model->state.expert_up;
+
+	size_t T = tensor_len(input);
+	tensor_resize(gate, T);
+	tensor_resize(up, T);
+
+	tensor_mma_transposed_2x2(gate, input, hl->gate_exp[0], NULL);
+	tensor_mma_transposed_2x2(up, input, hl->up_exp[0], NULL);
+	silu(gate);
+	tensor_mul(gate, gate, up);
+	tensor_mma_transposed_2x2(output, gate, hl->down_exp[0], NULL);
+}
+
 static void moe_ffn(struct mixtral *model, tensor_t *input, tensor_t *output, size_t l)
 {
 	struct mixtral_layer *hl = &model->hl[l];
@@ -453,8 +491,10 @@ static void mixtral_forward(struct mixtral *model, int *tok, int *pos, size_t T,
 		rms_norm(moe_out, output, hl->ffn_norm);
 		profiler_record(6, "rms_norm2");
 
-		/* MoE FFN */
-		moe_ffn(model, moe_out, output, l);
+		if (model->num_experts > 0)
+			moe_ffn(model, moe_out, output, l);
+		else
+			dense_ffn(model, moe_out, output, l);
 		profiler_record(7, "moe_ffn");
 
 		/* Residual */
@@ -583,8 +623,10 @@ void mixtral_close(void *ctx)
 		tensor_free_mapped(model->hl[i].v_weight);
 		tensor_free_mapped(model->hl[i].o_weight);
 		tensor_free_mapped(model->hl[i].ffn_norm);
-		tensor_free_mapped(model->hl[i].gate_inp);
-		for (size_t e = 0; e < model->num_experts; e++) {
+		if (model->hl[i].gate_inp)
+			tensor_free_mapped(model->hl[i].gate_inp);
+		size_t ne = model->num_experts > 0 ? model->num_experts : 1;
+		for (size_t e = 0; e < ne; e++) {
 			tensor_free_mapped(model->hl[i].gate_exp[e]);
 			tensor_free_mapped(model->hl[i].up_exp[e]);
 			tensor_free_mapped(model->hl[i].down_exp[e]);
@@ -604,7 +646,8 @@ void mixtral_close(void *ctx)
 	tensor_free(model->state.masked_attn);
 	tensor_free(model->state.attn);
 	tensor_free(model->state.attn_residual);
-	tensor_free(model->state.gate_logits);
+	if (model->state.gate_logits)
+		tensor_free(model->state.gate_logits);
 	tensor_free(model->state.expert_gate);
 	tensor_free(model->state.expert_up);
 	tensor_free(model->state.expert_out);

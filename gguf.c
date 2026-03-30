@@ -422,6 +422,14 @@ uint32_t gguf_get_uint32(const struct gguf *g, const char *key)
 	return (uint32_t)gguf_get_uint64(g, key);
 }
 
+uint32_t gguf_get_uint32_or(const struct gguf *g, const char *key, uint32_t def)
+{
+	const struct gguf_kv *kv = gguf_find_kv(g, key);
+	if (!kv)
+		return def;
+	return (uint32_t)gguf_get_uint64(g, key);
+}
+
 float gguf_get_float32(const struct gguf *g, const char *key)
 {
 	const struct gguf_kv *kv = gguf_find_kv(g, key);

@@ -17,6 +17,7 @@ size_t gguf_metadata_count(const struct gguf *g);
 const char *gguf_get_str(const struct gguf *g, const char *key);
 uint64_t gguf_get_uint64(const struct gguf *g, const char *key);
 uint32_t gguf_get_uint32(const struct gguf *g, const char *key);
+uint32_t gguf_get_uint32_or(const struct gguf *g, const char *key, uint32_t def);
 float gguf_get_float32(const struct gguf *g, const char *key);
 
 /* array metadata access */
