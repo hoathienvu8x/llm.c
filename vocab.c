@@ -199,22 +199,61 @@ static struct vocab_ht *vocab_ht_build(struct gguf *g)
 	return ht;
 }
 
-static struct vocab_ht *ht;
-
-static void ensure_ht(struct gguf *g)
+static struct vocab_ht *ensure_ht(struct gguf *g)
 {
-	if (!ht)
+	struct vocab_ht *ht = gguf_get_vocab(g);
+	if (!ht) {
 		ht = vocab_ht_build(g);
+		gguf_set_vocab(g, ht);
+	}
+	return ht;
 }
 
 int vocab_decode(struct gguf *g, const char *s, int *sz)
 {
-	ensure_ht(g);
+	struct vocab_ht *ht = ensure_ht(g);
 
 	if (*s == 0)
 		return -1;
 
+	/* Try special tokens first: <|...|> and [...] patterns */
+	if (s[0] == '<' && s[1] == '|') {
+		const char *end = strstr(s + 2, "|>");
+		if (end) {
+			int slen = (end + 2) - s;
+			int idx = ht_lookup(ht, s, slen);
+			if (idx >= 0) {
+				*sz = slen;
+				return idx;
+			}
+		}
+	}
+	if (s[0] == '[') {
+		const char *end = strchr(s + 1, ']');
+		if (end) {
+			int slen = (end + 1) - s;
+			int idx = ht_lookup(ht, s, slen);
+			if (idx >= 0) {
+				*sz = slen;
+				return idx;
+			}
+		}
+	}
+
 	int remaining = strlen(s);
+
+	/* Don't let greedy match cross into special token boundaries */
+	const char *p = s + 1;
+	while (*p) {
+		if ((p[0] == '<' && p[1] == '|') || p[0] == '[') {
+			int dist = p - s;
+			if (dist < remaining)
+				remaining = dist;
+			break;
+		}
+		p++;
+	}
+
 	int limit = ht->max_token_len < remaining ? ht->max_token_len : remaining;
 	int best_len = 0;
 	int best_idx = -1;
@@ -233,7 +272,20 @@ int vocab_decode(struct gguf *g, const char *s, int *sz)
 
 const char *vocab_encode(struct gguf *g, size_t token)
 {
-	ensure_ht(g);
+	struct vocab_ht *ht = ensure_ht(g);
 	assert(token < ht->n_tokens);
 	return ht->decoded[token];
+}
+
+void vocab_free(struct gguf *g)
+{
+	struct vocab_ht *ht = gguf_get_vocab(g);
+	if (!ht)
+		return;
+	for (size_t i = 0; i < ht->n_tokens; i++)
+		free(ht->decoded[i]);
+	free(ht->decoded);
+	free(ht->buckets);
+	free(ht);
+	gguf_set_vocab(g, NULL);
 }

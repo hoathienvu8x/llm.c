@@ -1,4 +1,5 @@
 #include "prompt.h"
+#include "vocab.h"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -26,6 +27,45 @@ static void test_template(const char *name, struct gguf *g)
 	chat_template_free(t);
 }
 
+static void assert_single_token(struct gguf *g, const char *text)
+{
+	int sz;
+	int tok = vocab_decode(g, text, &sz);
+	printf("  '%s' -> tok=%d sz=%d: ", text, tok, sz);
+	assert(tok >= 0);
+	assert(sz == (int)strlen(text));
+	printf("ok\n");
+}
+
+static void assert_boundary(struct gguf *g, const char *text, const char *special)
+{
+	int sz;
+	vocab_decode(g, text, &sz);
+	const char *sp = strstr(text, special);
+	assert(sp);
+	printf("  '%s' boundary at '%s' sz=%d: ", text, special, sz);
+	assert(sz <= (int)(sp - text));
+	printf("ok\n");
+}
+
+static void test_special_tokens(const char *name, struct gguf *g)
+{
+	printf("%s special tokens:\n", name);
+
+	if (strstr(name, "mistral") && !strstr(name, "mixtral")) {
+		assert_single_token(g, "[INST]");
+		assert_single_token(g, "[/INST]");
+		assert_boundary(g, "hi [/INST]", "[/INST]");
+		assert_boundary(g, "hello [INST] world", "[INST]");
+	} else if (strstr(name, "llama")) {
+		assert_single_token(g, "<|start_header_id|>");
+		assert_single_token(g, "<|end_header_id|>");
+		assert_single_token(g, "<|eot_id|>");
+		assert_boundary(g, "?<|eot_id|>", "<|eot_id|>");
+		assert_boundary(g, "hello<|start_header_id|>", "<|start_header_id|>");
+	}
+}
+
 int main(int argc, char **argv)
 {
 	for (int i = 1; i < argc; i++) {
@@ -35,6 +75,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 		test_template(argv[i], g);
+		test_special_tokens(argv[i], g);
 		gguf_close(g);
 	}
 	printf("prompt: ok\n");

@@ -215,6 +215,23 @@ struct chat_template *chat_template_load(struct gguf *g)
 	t->eos_after_assistant = asst_eos;
 	t->gen_prompt = find_gen_prompt(tmpl);
 
+	/* Fallback: detect Llama 3 style generic role template */
+	if (!t->user.prefix[0] && !t->gen_prompt &&
+	    find(tmpl, "<|start_header_id|>")) {
+		free(t->user.prefix);
+		free(t->user.suffix);
+		free(t->assistant.prefix);
+		free(t->assistant.suffix);
+		t->user.prefix = strdup("<|start_header_id|>user<|end_header_id|>\n\n");
+		t->user.suffix = strdup("<|eot_id|>");
+		t->assistant.prefix = strdup("<|start_header_id|>assistant<|end_header_id|>\n\n");
+		t->assistant.suffix = strdup("<|eot_id|>");
+		t->gen_prompt = strdup("<|start_header_id|>assistant<|end_header_id|>\n\n");
+		t->system_preamble = strdup(
+			"<|start_header_id|>system<|end_header_id|>\n\n"
+			"You are a helpful assistant. Be concise.<|eot_id|>");
+	}
+
 	return t;
 }
 
@@ -225,6 +242,8 @@ char *chat_template_apply(struct chat_template *t, const char *user_msg)
 
 	size_t len = strlen(t->user.prefix) + strlen(user_msg) +
 		     strlen(t->user.suffix);
+	if (t->system_preamble && !t->system_sent)
+		len += strlen(t->system_preamble);
 	if (t->gen_prompt)
 		len += strlen(t->gen_prompt);
 	if (!t->gen_prompt && t->assistant.prefix[0])
@@ -232,6 +251,11 @@ char *chat_template_apply(struct chat_template *t, const char *user_msg)
 
 	char *out = malloc(len + 1);
 	out[0] = '\0';
+
+	if (t->system_preamble && !t->system_sent) {
+		strcat(out, t->system_preamble);
+		t->system_sent = 1;
+	}
 
 	strcat(out, t->user.prefix);
 	strcat(out, user_msg);
@@ -255,5 +279,6 @@ void chat_template_free(struct chat_template *t)
 	free(t->system.prefix);
 	free(t->system.suffix);
 	free(t->gen_prompt);
+	free(t->system_preamble);
 	free(t);
 }

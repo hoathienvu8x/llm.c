@@ -1,4 +1,5 @@
 #include "gguf.h"
+#include "vocab.h"
 #include "quant.h"
 
 #include <fcntl.h>
@@ -96,6 +97,8 @@ struct gguf {
 	size_t tensor_data_offset;
 
 	uint32_t alignment;
+
+	void *vocab;  /* vocab_ht, built lazily by vocab.c */
 };
 
 /* cursor-based reader over the mmap'd file */
@@ -367,8 +370,19 @@ void gguf_close(struct gguf *g)
 		free(g->tensors[i].name.str);
 	free(g->tensors);
 
+	vocab_free(g);
 	munmap(g->data, g->data_len);
 	free(g);
+}
+
+void *gguf_get_vocab(const struct gguf *g)
+{
+	return g->vocab;
+}
+
+void gguf_set_vocab(struct gguf *g, void *vocab)
+{
+	g->vocab = vocab;
 }
 
 size_t gguf_tensor_count(const struct gguf *g)

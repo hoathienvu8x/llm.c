@@ -46,21 +46,22 @@ download:
 	test -f gpt2_$(M).gguf || models/gpt2/download_gguf.sh
 	test -f olmoe-1b-7b-q4_k_m.gguf || models/olmoe/download_gguf.sh
 	test -f mixtral-8x7b-Q4_K_M.gguf || models/mixtral/download_gguf.sh
+	test -f llama-3.2-3b-instruct-Q4_K_M.gguf || models/llama/download_gguf.sh
 
 build:
 	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c prompt.c $(COMMON_SRCS) profiler.c $(LIBS) -o llmc
 
 run: build
-	./llmc mixtral-8x7b-Q4_K_M.gguf
+	./llmc llama-3.2-3b-instruct-Q4_K_M.gguf
 
 check: build
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/tensor.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/simd.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/nn.c $(COMMON_SRCS) nn.c $(LIBS) && ./a.out
-	$(CC) $(LDFLAGS) $(CFLAGS) -g test/gguf.c gguf.c $(COMMON_SRCS) $(LIBS) && ./a.out gpt2_$(M).gguf
+	$(CC) $(LDFLAGS) $(CFLAGS) -g test/gguf.c gguf.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out gpt2_$(M).gguf
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/quant.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/matmul.c $(COMMON_SRCS) $(LIBS) && ./a.out
-	$(CC) $(LDFLAGS) $(CFLAGS) -g test/prompt.c gguf.c prompt.c $(COMMON_SRCS) $(LIBS) && ./a.out mixtral-8x7b-Q4_K_M.gguf olmoe-1b-7b-q4_k_m.gguf gpt2_$(M).gguf
+	$(CC) $(LDFLAGS) $(CFLAGS) -g test/prompt.c gguf.c prompt.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out mixtral-8x7b-Q4_K_M.gguf mistral-7b-instruct-v0.3-Q4_K_M.gguf olmoe-1b-7b-q4_k_m.gguf gpt2_$(M).gguf llama-3.2-3b-instruct-Q4_K_M.gguf
 	@for expected in models/*/test/expected_*.txt; do \
 		dir=$${expected%/test/*}; \
 		variant=$$(basename $$expected .txt | sed 's/^expected_//'); \

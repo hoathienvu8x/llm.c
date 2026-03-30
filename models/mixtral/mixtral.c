@@ -83,6 +83,8 @@ void *mixtral_load(struct gguf *g)
 	model->gguf = g;
 
 	model->context = gguf_get_uint32(g, "llama.context_length");
+	if (model->context > 8192)
+		model->context = 8192;
 	model->embeddings = gguf_get_uint32(g, "llama.embedding_length");
 	model->q_heads = gguf_get_uint32(g, "llama.attention.head_count");
 	model->kv_heads = gguf_get_uint32(g, "llama.attention.head_count_kv");
@@ -123,6 +125,10 @@ void *mixtral_load(struct gguf *g)
 
 	model->wte = gguf_tensor_2d(g, model->vocab_len, E, "token_embd.weight");
 	model->lm_head = gguf_tensor_2d(g, model->vocab_len, E, "output.weight");
+	if (!model->lm_head) {
+		fprintf(stderr, "llama: using tied embeddings (token_embd as lm_head)\n");
+		model->lm_head = model->wte;
+	}
 	model->output_norm = gguf_tensor_1d(g, E, "output_norm.weight");
 
 	for (size_t i = 0; i < model->layers; i++) {
@@ -613,7 +619,8 @@ void mixtral_close(void *ctx)
 	struct mixtral *model = ctx;
 
 	tensor_free_mapped(model->wte);
-	tensor_free_mapped(model->lm_head);
+	if (model->lm_head != model->wte)
+		tensor_free_mapped(model->lm_head);
 	tensor_free_mapped(model->output_norm);
 
 	for (size_t i = 0; i < model->layers; i++) {
