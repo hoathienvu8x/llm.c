@@ -1,4 +1,4 @@
-#include "mixtral.h"
+#include "llama.h"
 #include "nn.h"
 #include "matmul.h"
 #include "gguf.h"
@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <math.h>
 
-struct mixtral {
+struct llama {
 	struct gguf *gguf;
 
 	struct {
@@ -36,7 +36,7 @@ struct mixtral {
 	const tensor_t *wte;      /* token_embd.weight */
 	const tensor_t *lm_head;  /* output.weight */
 
-	struct mixtral_layer {
+	struct llama_layer {
 		const tensor_t *attn_norm;  /* RMSNorm */
 
 		const tensor_t *q_weight;   /* [q_heads * HLEN, E] */
@@ -72,9 +72,9 @@ struct mixtral {
 	struct kvcache *cache;
 };
 
-void *mixtral_load(struct gguf *g)
+void *llama_load(struct gguf *g)
 {
-	struct mixtral *model;
+	struct llama *model;
 
 	model = calloc(1, sizeof(*model));
 	if (!model)
@@ -220,7 +220,7 @@ void *mixtral_load(struct gguf *g)
 /* GQA attention: q_heads > kv_heads.
  * Each KV head serves (q_heads / kv_heads) Q heads.
  * We iterate over KV heads and process the Q head group for each. */
-static void transformer(struct mixtral *model, tensor_t *q, tensor_t *k, tensor_t *v,
+static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t *v,
                          tensor_t *output, size_t l, enum kv_mode mode)
 {
 	tensor_t *qh = model->state.qh;
@@ -340,9 +340,9 @@ static void transformer(struct mixtral *model, tensor_t *q, tensor_t *k, tensor_
 	}
 }
 
-static void dense_ffn(struct mixtral *model, tensor_t *input, tensor_t *output, size_t l)
+static void dense_ffn(struct llama *model, tensor_t *input, tensor_t *output, size_t l)
 {
-	struct mixtral_layer *hl = &model->hl[l];
+	struct llama_layer *hl = &model->hl[l];
 	tensor_t *gate = model->state.expert_gate;
 	tensor_t *up = model->state.expert_up;
 
@@ -357,9 +357,9 @@ static void dense_ffn(struct mixtral *model, tensor_t *input, tensor_t *output, 
 	tensor_mma_transposed_2x2(output, gate, hl->down_exp[0], NULL);
 }
 
-static void moe_ffn(struct mixtral *model, tensor_t *input, tensor_t *output, size_t l)
+static void moe_ffn(struct llama *model, tensor_t *input, tensor_t *output, size_t l)
 {
-	struct mixtral_layer *hl = &model->hl[l];
+	struct llama_layer *hl = &model->hl[l];
 	size_t T = tensor_len(input);
 	size_t E = model->embeddings;
 	size_t EI = model->expert_intermediate;
@@ -421,7 +421,7 @@ static void moe_ffn(struct mixtral *model, tensor_t *input, tensor_t *output, si
 	}
 }
 
-static void mixtral_forward(struct mixtral *model, int *tok, int *pos, size_t T,
+static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
                              tensor_t *output, enum kv_mode mode)
 {
 	size_t E = model->embeddings;
@@ -451,7 +451,7 @@ static void mixtral_forward(struct mixtral *model, int *tok, int *pos, size_t T,
 	profiler_record(0, "pick");
 
 	for (size_t l = 0; l < model->layers; l++) {
-		struct mixtral_layer *hl = &model->hl[l];
+		struct llama_layer *hl = &model->hl[l];
 
 		/* Pre-attention RMSNorm */
 		tensor_copy(output, hidden);
@@ -515,13 +515,13 @@ static void mixtral_forward(struct mixtral *model, int *tok, int *pos, size_t T,
 	profiler_record(9, "final_norm");
 }
 
-void mixtral_prefill(struct mixtral *model, int *tok, int *pos, size_t T, tensor_t *output)
+void llama_prefill(struct llama *model, int *tok, int *pos, size_t T, tensor_t *output)
 {
-	mixtral_forward(model, tok, pos, T, output, KV_PREFILL);
+	llama_forward(model, tok, pos, T, output, KV_PREFILL);
 	model->cache->size = T;
 }
 
-void mixtral_decode(struct mixtral *model, int tok, int pos, tensor_t *output)
+void llama_decode(struct llama *model, int tok, int pos, tensor_t *output)
 {
 	if (model->cache->size >= model->cache->context)
 		kvcache_rotate(model->cache);
@@ -529,13 +529,13 @@ void mixtral_decode(struct mixtral *model, int tok, int pos, tensor_t *output)
 	if (pos >= (int)model->cache->context)
 		pos = model->cache->size;
 
-	mixtral_forward(model, &tok, &pos, 1, output, KV_DECODE);
+	llama_forward(model, &tok, &pos, 1, output, KV_DECODE);
 	model->cache->size++;
 }
 
-void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void *cb_ctx)
+void llama_generate(void *ctx, const char *text, int num, pick_token_t f, void *cb_ctx)
 {
-	struct mixtral *model = ctx;
+	struct llama *model = ctx;
 	int tok_sz;
 
 	size_t E = model->embeddings;
@@ -568,7 +568,7 @@ void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void
 	}
 
 	uint64_t prefill_begin = profiler_now();
-	mixtral_prefill(model, toks, poss, T, output);
+	llama_prefill(model, toks, poss, T, output);
 	uint64_t prefill_end = profiler_now();
 
 	model->pos += T;
@@ -585,7 +585,7 @@ void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void
 	uint64_t decode_begin = profiler_now();
 	uint64_t batch_begin = decode_begin;
 	while (num-- && tok != model->eos_id) {
-		mixtral_decode(model, tok, model->pos, output);
+		llama_decode(model, tok, model->pos, output);
 		model->pos++;
 
 		tensor_at(output, 0, &last_row);
@@ -614,9 +614,9 @@ void mixtral_generate(void *ctx, const char *text, int num, pick_token_t f, void
 	free(poss);
 }
 
-void mixtral_close(void *ctx)
+void llama_close(void *ctx)
 {
-	struct mixtral *model = ctx;
+	struct llama *model = ctx;
 
 	tensor_free_mapped(model->wte);
 	if (model->lm_head != model->wte)
@@ -666,15 +666,15 @@ void mixtral_close(void *ctx)
 	free(model);
 }
 
-static const struct model mixtral_model = {
+static const struct model llama_model = {
 	.name = "llama",  /* Mixtral uses llama architecture in GGUF */
-	.load = mixtral_load,
-	.generate = mixtral_generate,
-	.close = mixtral_close,
+	.load = llama_load,
+	.generate = llama_generate,
+	.close = llama_close,
 };
 
 __attribute__((constructor))
-static void mixtral_register(void)
+static void llama_register(void)
 {
-	register_model(&mixtral_model);
+	register_model(&llama_model);
 }
