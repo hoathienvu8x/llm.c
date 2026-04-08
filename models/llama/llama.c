@@ -5,7 +5,7 @@
 #include "vocab.h"
 #include "kvcache.h"
 #include "simd.h"
-#include "profiler.h"
+#include "tensor_trace.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -232,16 +232,11 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 	bool prefill = !decode;
 
 	size_t T = tensor_len(q);
-	size_t AT = T;
+	size_t AT = cache->size + T;  /* total context length after this step */
 	size_t QH = model->q_heads;
 	size_t KVH = model->kv_heads;
 	size_t HLEN = model->head_len;
 	size_t group_size = QH / KVH;
-
-	if (decode) {
-		assert(T == 1);
-		AT = cache->size + 1;
-	}
 
 	tensor_resize(qh, T);
 	tensor_resize_2d(masked_attn, AT, AT);
@@ -271,13 +266,13 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 				tensor_at(k, t_idx, &kv);
 				tensor_reshape_2d(&kv, KVH, HLEN);
 				tensor_at(&kv, kv_idx, &kv);
-				tensor_set_inner(&cache_k, t_idx, &kv);
+				tensor_set_inner(&cache_k, cache->size + t_idx, &kv);
 
 				tensor_t vv;
 				tensor_at(v, t_idx, &vv);
 				tensor_reshape_2d(&vv, KVH, HLEN);
 				tensor_at(&vv, kv_idx, &vv);
-				tensor_set_inner(&cache_v, t_idx, &vv);
+				tensor_set_inner(&cache_v, cache->size + t_idx, &vv);
 			}
 		}
 
@@ -314,10 +309,10 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 			tensor_div_scalar(masked_attn, masked_attn, model->hlen_sq);
 
 			if (prefill) {
-				for (size_t i = 0; i < AT; i++)
+				for (size_t i = 0; i < T; i++)
 					for (size_t j = 0; j < AT; j++)
-						if (j > i)
-							masked_attn->data[i * AT + j] = -1.0000e+04;
+						if (j > cache->size + i)
+							masked_attn->data[i * AT + j] = -INFINITY;
 			}
 
 			softmax_2d(masked_attn);
@@ -326,7 +321,9 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 			tensor_assert_2d(qh, T, HLEN);
 
 			/* Write back to output at the correct Q head position */
-			for (size_t t_idx = prefill ? 0 : AT - 1; t_idx < AT; t_idx++) {
+			size_t out_start = prefill ? 0 : AT - 1;
+			size_t out_end = prefill ? T : AT;
+			for (size_t t_idx = out_start; t_idx < out_end; t_idx++) {
 				tensor_t row;
 				tensor_at(qh, prefill ? t_idx : 0, &row);
 				tensor_assert_1d(&row, HLEN);
@@ -448,7 +445,7 @@ static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
 	tensor_resize(moe_out, T);
 	tensor_resize(output, T);
 
-	profiler_record(0, "pick");
+	tensor_trace(hidden, "embed");
 
 	for (size_t l = 0; l < model->layers; l++) {
 		struct llama_layer *hl = &model->hl[l];
@@ -456,7 +453,7 @@ static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
 		/* Pre-attention RMSNorm */
 		tensor_copy(output, hidden);
 		rms_norm(q, output, hl->attn_norm);
-		profiler_record(1, "rms_norm1");
+		tensor_trace(q, "L%zu.norm1", l);
 
 		/* Separate Q/K/V projections */
 		tensor_copy(output, q);
@@ -466,7 +463,9 @@ static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
 		tensor_assert_2d(q, T, QH * HLEN);
 		tensor_assert_2d(k, T, KVH * HLEN);
 		tensor_assert_2d(v, T, KVH * HLEN);
-		profiler_record(2, "qkv_proj");
+		tensor_trace(q, "L%zu.Q", l);
+		tensor_trace(k, "L%zu.K", l);
+		tensor_trace(v, "L%zu.V", l);
 
 		/* Apply RoPE to Q and K */
 		for (size_t t_idx = 0; t_idx < T; t_idx++) {
@@ -480,45 +479,45 @@ static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
 			tensor_reshape_2d(&kt, KVH, HLEN);
 			rope_apply(&kt, pos[t_idx], HLEN, model->rope_theta);
 		}
-		profiler_record(3, "rope");
+		tensor_trace(NULL, "L%zu.rope", l);
 
 		/* GQA multi-head attention */
 		transformer(model, q, k, v, attn, l, mode);
-		profiler_record(4, "xformer");
+		tensor_trace(attn, "L%zu.attn", l);
 
 		/* Output projection + residual */
 		tensor_mma_transposed_2x2(output, attn, hl->o_weight, NULL);
+		tensor_trace(output, "L%zu.oproj", l);
 		tensor_add(hidden, hidden, output);
 		tensor_copy(attn_residual, hidden);
-		profiler_record(5, "o_proj+residual");
 
 		/* Pre-MoE RMSNorm */
 		tensor_copy(output, hidden);
 		rms_norm(moe_out, output, hl->ffn_norm);
-		profiler_record(6, "rms_norm2");
+		tensor_trace(moe_out, "L%zu.norm2", l);
 
 		if (model->num_experts > 0)
 			moe_ffn(model, moe_out, output, l);
 		else
 			dense_ffn(model, moe_out, output, l);
-		profiler_record(7, "moe_ffn");
+		tensor_trace(output, "L%zu.ffn", l);
 
 		/* Residual */
 		tensor_add(hidden, attn_residual, output);
-		profiler_record(8, "moe_residual");
 	}
 
 	/* Final RMSNorm */
 	tensor_copy(output, hidden);
 	rms_norm(hidden, output, model->output_norm);
 	tensor_copy(output, hidden);
-	profiler_record(9, "final_norm");
+	tensor_trace(output, "final_norm");
+
 }
 
 void llama_prefill(struct llama *model, int *tok, int *pos, size_t T, tensor_t *output)
 {
 	llama_forward(model, tok, pos, T, output, KV_PREFILL);
-	model->cache->size = T;
+	model->cache->size += T;
 }
 
 void llama_decode(struct llama *model, int tok, int pos, tensor_t *output)
@@ -559,19 +558,24 @@ void llama_generate(void *ctx, const char *text, int num, pick_token_t f, void *
 		T++;
 	}
 
-	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
-		text += tok_sz;
-		assert(model->pos + T < (int)C);
-		toks[T] = tok;
-		poss[T] = model->pos + T;
-		T++;
-	}
+	T += vocab_tokenize(model->gguf, text, &toks[T], C - T);
+	for (int i = (model->pos == 0) ? 1 : 0; i < T; i++)
+		poss[i] = model->pos + i;
 
 	uint64_t prefill_begin = profiler_now();
-	llama_prefill(model, toks, poss, T, output);
-	uint64_t prefill_end = profiler_now();
 
+	if (getenv("DEBUG_TOKENS")) {
+		fprintf(stderr, "TOKENS: pos=%d cache=%zu T=%d\n",
+			model->pos, model->cache->size, T);
+		for (int i = 0; i < T; i++)
+			fprintf(stderr, "  [%d] tok=%d pos=%d '%s'\n",
+				i, toks[i], poss[i], vocab_encode(model->gguf, toks[i]));
+	}
+
+	llama_prefill(model, toks, poss, T, output);
 	model->pos += T;
+
+	uint64_t prefill_end = profiler_now();
 
 	tensor_t last_row;
 	tensor_at(output, T - 1, &last_row);
@@ -580,6 +584,7 @@ void llama_generate(void *ctx, const char *text, int num, pick_token_t f, void *
 	tensor_reshape_2d(&last_row, 1, E);
 	tensor_mma_transposed_2x2(logits, &last_row, model->lm_head, NULL);
 	tensor_reshape_1d(logits, model->vocab_len);
+
 	tok = f(cb_ctx, logits);
 
 	uint64_t decode_begin = profiler_now();

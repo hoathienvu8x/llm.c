@@ -5,7 +5,7 @@
 #include "vocab.h"
 #include "kvcache.h"
 #include "simd.h"
-#include "profiler.h"
+#include "tensor_trace.h"
 #include "quant.h"
 
 #include <stdbool.h>
@@ -242,15 +242,10 @@ static void transformer(struct olmoe *model, tensor_t *q, tensor_t *k, tensor_t 
 	bool prefill = !decode;
 
 	size_t T = tensor_len(q);
-	size_t AT = T;
+	size_t AT = cache->size + T;
 	size_t H = model->heads;
 	size_t HLEN = model->head_len;
 	size_t E = model->embeddings;
-
-	if (decode) {
-		assert(T == 1);
-		AT = cache->size + 1;
-	}
 
 	tensor_resize(qh, T);
 	tensor_resize_2d(masked_attn, AT, AT);
@@ -294,13 +289,13 @@ static void transformer(struct olmoe *model, tensor_t *q, tensor_t *k, tensor_t 
 				tensor_at(k, t_idx, &kv);
 				tensor_reshape_2d(&kv, H, HLEN);
 				tensor_at(&kv, h_idx, &kv);
-				tensor_set_inner(&cache_k, t_idx, &kv);
+				tensor_set_inner(&cache_k, cache->size + t_idx, &kv);
 
 				tensor_t vv;
 				tensor_at(v, t_idx, &vv);
 				tensor_reshape_2d(&vv, H, HLEN);
 				tensor_at(&vv, h_idx, &vv);
-				tensor_set_inner(&cache_v, t_idx, &vv);
+				tensor_set_inner(&cache_v, cache->size + t_idx, &vv);
 			}
 		}
 
@@ -315,9 +310,9 @@ static void transformer(struct olmoe *model, tensor_t *q, tensor_t *k, tensor_t 
 		tensor_div_scalar(masked_attn, masked_attn, model->hlen_sq);
 
 		if (prefill) {
-			for (size_t i = 0; i < AT; i++)
+			for (size_t i = 0; i < T; i++)
 				for (size_t j = 0; j < AT; j++)
-					if (j > i)
+					if (j > cache->size + i)
 						masked_attn->data[i * AT + j] = -1.0000e+04;
 		}
 
@@ -329,7 +324,9 @@ static void transformer(struct olmoe *model, tensor_t *q, tensor_t *k, tensor_t 
 		tensor_mma_2x2(qh, masked_attn, &cache_v, NULL);
 		tensor_assert_2d(qh, T, HLEN);
 
-		for (size_t t_idx = prefill ? 0 : AT - 1; t_idx < AT; t_idx++) {
+		size_t out_start = prefill ? 0 : AT - 1;
+		size_t out_end = prefill ? T : AT;
+		for (size_t t_idx = out_start; t_idx < out_end; t_idx++) {
 			tensor_t row;
 			tensor_at(qh, prefill ? t_idx : 0, &row);
 			tensor_assert_1d(&row, HLEN);
@@ -437,7 +434,7 @@ static void olmoe_forward(struct olmoe *model, int *tok, int *pos, size_t T,
 	tensor_resize(moe_out, T);
 	tensor_resize(output, T);
 
-	profiler_record(0, "pick");
+	tensor_trace(hidden, "embed");
 
 	for (size_t l = 0; l < model->layers; l++) {
 		struct olmoe_layer *hl = &model->hl[l];
@@ -445,14 +442,16 @@ static void olmoe_forward(struct olmoe *model, int *tok, int *pos, size_t T,
 		/* Pre-attention RMSNorm */
 		tensor_copy(output, hidden);
 		rms_norm(q, output, hl->attn_norm);
-		profiler_record(1, "rms_norm1");
+		tensor_trace(q, "L%zu.norm1", l);
 
 		/* Separate Q/K/V projections */
 		tensor_copy(output, q);
 		tensor_mma_transposed_2x2(q, output, hl->q_weight, NULL);
 		tensor_mma_transposed_2x2(k, output, hl->k_weight, NULL);
 		tensor_mma_transposed_2x2(v, output, hl->v_weight, NULL);
-		profiler_record(2, "qkv_proj");
+		tensor_trace(q, "L%zu.Q", l);
+		tensor_trace(k, "L%zu.K", l);
+		tensor_trace(v, "L%zu.V", l);
 
 		/* Q/K normalization (full-vector RMSNorm, applied before head split) */
 		tensor_copy(output, q);
@@ -471,43 +470,42 @@ static void olmoe_forward(struct olmoe *model, int *tok, int *pos, size_t T,
 			tensor_reshape_2d(&kt, H, HLEN);
 			rope_apply(&kt, pos[t_idx], HLEN, model->rope_theta);
 		}
-		profiler_record(3, "qk_norm+rope");
+		tensor_trace(NULL, "L%zu.rope", l);
 
 		/* Multi-head attention */
 		transformer(model, q, k, v, attn, l, mode);
-		profiler_record(4, "xformer");
+		tensor_trace(attn, "L%zu.attn", l);
 
 		/* Output projection + residual */
 		tensor_mma_transposed_2x2(output, attn, hl->o_weight, NULL);
+		tensor_trace(output, "L%zu.oproj", l);
 		tensor_add(hidden, hidden, output);
 		tensor_copy(attn_residual, hidden);
-		profiler_record(5, "o_proj+residual");
 
 		/* Pre-MoE RMSNorm */
 		tensor_copy(output, hidden);
 		rms_norm(moe_out, output, hl->ffn_norm);
-		profiler_record(6, "rms_norm2");
+		tensor_trace(moe_out, "L%zu.norm2", l);
 
 		/* MoE FFN */
 		moe_ffn(model, moe_out, output, l);
-		profiler_record(7, "moe_ffn");
+		tensor_trace(output, "L%zu.ffn", l);
 
 		/* Residual */
 		tensor_add(hidden, attn_residual, output);
-		profiler_record(8, "moe_residual");
 	}
 
 	/* Final RMSNorm */
 	tensor_copy(output, hidden);
 	rms_norm(hidden, output, model->output_norm);
 	tensor_copy(output, hidden);
-	profiler_record(9, "final_norm");
+	tensor_trace(output, "final_norm");
 }
 
 void olmoe_prefill(struct olmoe *model, int *tok, int *pos, size_t T, tensor_t *output)
 {
 	olmoe_forward(model, tok, pos, T, output, KV_PREFILL);
-	model->cache->size = T;
+	model->cache->size += T;
 }
 
 void olmoe_decode(struct olmoe *model, int tok, int pos, tensor_t *output)
@@ -548,13 +546,9 @@ void olmoe_generate(void *ctx, const char *text, int num, pick_token_t f, void *
 		T++;
 	}
 
-	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
-		text += tok_sz;
-		assert(model->pos + T < (int)C);
-		toks[T] = tok;
-		poss[T] = model->pos + T;
-		T++;
-	}
+	T += vocab_tokenize(model->gguf, text, &toks[T], C - T);
+	for (int i = (model->pos == 0) ? 1 : 0; i < T; i++)
+		poss[i] = model->pos + i;
 
 	uint64_t prefill_begin = profiler_now();
 	olmoe_prefill(model, toks, poss, T, output);

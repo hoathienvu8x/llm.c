@@ -4,8 +4,8 @@ LIBS=-lm -lpthread
 #BLAS_LDFLAGS=$(shell pkg-config --libs cblas)
 
 # OpenBLAS
-BLAS_CFLAGS=-I/usr/include/openblas -DUSE_CBLAS
-BLAS_LDFLAGS=-lopenblas
+#BLAS_CFLAGS=-I/usr/include/openblas -DUSE_CBLAS
+#BLAS_LDFLAGS=-lopenblas
 
 # Intel MKL
 #BLAS_CFLAGS=$(shell pkg-config --cflags mkl-dynamic-lp64-iomp) -DUSE_CBLAS
@@ -38,7 +38,7 @@ M=124M
 
 FG=/home/sdf/src/FlameGraph
 
-SEED=SRAND48_SEED=1337
+SEED=--seed 1337
 
 all: download check
 
@@ -49,19 +49,21 @@ download:
 	test -f llama-3.2-3b-instruct-Q4_K_M.gguf || models/llama/download_gguf.sh
 
 build:
-	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c prompt.c $(COMMON_SRCS) profiler.c $(LIBS) -o llmc
+	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c prompt.c $(COMMON_SRCS) tensor_trace.c $(LIBS) -o llmc
 
 run: build
-	./llmc llama-3.2-3b-instruct-Q4_K_M.gguf
+	./llmc mistral-7b-instruct-v0.3-Q4_K_M.gguf
 
 check: build
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/tensor.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/simd.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/nn.c $(COMMON_SRCS) nn.c $(LIBS) && ./a.out
+	$(CC) $(LDFLAGS) $(CFLAGS) -g test/rope.c $(COMMON_SRCS) nn.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/gguf.c gguf.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out gpt2_$(M).gguf
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/quant.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/matmul.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/prompt.c gguf.c prompt.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out mixtral-8x7b-Q4_K_M.gguf mistral-7b-instruct-v0.3-Q4_K_M.gguf olmoe-1b-7b-q4_k_m.gguf gpt2_$(M).gguf llama-3.2-3b-instruct-Q4_K_M.gguf
+	$(CC) $(LDFLAGS) $(CFLAGS) -g test/vocab.c gguf.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out llama-3.2-3b-instruct-Q4_K_M.gguf test/expected_vocab_llama3.txt && ./a.out mistral-7b-instruct-v0.3-Q4_K_M.gguf test/expected_vocab_mistral.txt
 	@for expected in models/*/test/expected_*.txt; do \
 		dir=$${expected%/test/*}; \
 		variant=$$(basename $$expected .txt | sed 's/^expected_//'); \
@@ -69,9 +71,10 @@ check: build
 		prefill=$$(ls $$dir/test/prefill*.txt | head -1); \
 		got=$$dir/test/got_$$variant.txt; \
 		echo "Testing $$gguf..."; \
-		$(SEED) ./llmc $$gguf < $$prefill > $$got && \
+		./llmc $(SEED) $$gguf < $$prefill > $$got && \
 		diff $$expected $$got || exit 1; \
 	done
+	test/multiturn.sh ./llmc mistral-7b-instruct-v0.3-Q4_K_M.gguf
 
 flamegraph:
 	$(MAKE) build O=0

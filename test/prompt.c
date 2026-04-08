@@ -19,10 +19,15 @@ static void test_template(const char *name, struct gguf *g)
 	       t->assistant.prefix, t->assistant.suffix, t->eos_after_assistant);
 	printf("  sys:  pre='%s' suf='%s'\n", t->system.prefix, t->system.suffix);
 	printf("  gen_prompt: '%s'\n", t->gen_prompt ? t->gen_prompt : "(null)");
+	printf("  turn_end: '%s'\n", t->turn_end ? t->turn_end : "(null)");
 
 	char *formatted = chat_template_apply(t, "Hello, world!");
-	printf("  applied: '%s'\n", formatted);
+	printf("  turn1: '%s'\n", formatted);
 	free(formatted);
+
+	char *formatted2 = chat_template_apply(t, "Follow up");
+	printf("  turn2: '%s'\n", formatted2);
+	free(formatted2);
 
 	chat_template_free(t);
 }

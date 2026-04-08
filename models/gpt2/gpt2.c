@@ -5,7 +5,7 @@
 #include "vocab.h"
 #include "kvcache.h"
 #include "simd.h"
-#include "profiler.h"
+#include "tensor_trace.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -175,15 +175,10 @@ static void transformer(struct gpt2 *model, tensor_t *input, tensor_t *output, s
 	bool prefill = !decode;
 
 	size_t T = tensor_len(input);
-	size_t AT = T; /* attention dimensionality for KV cache */
+	size_t AT = cache->size + T; /* total context length after this step */
 	size_t H = model->heads;
 	size_t HLEN = model->head_len;
 	size_t E = model->embeddings;
-
-	if (decode) {
-		assert(T == 1);
-		AT = cache->size + 1;
-	}
 
 	tensor_resize(qh, T);
 	tensor_resize_2d(masked_attn, AT, AT);
@@ -253,13 +248,13 @@ static void transformer(struct gpt2 *model, tensor_t *input, tensor_t *output, s
 				tensor_at(&tok, 1, &k);
 				tensor_reshape_2d(&k, H, HLEN);
 				tensor_at(&k, h_idx, &k);
-				tensor_set_inner(&cache_k, t_idx, &k);
+				tensor_set_inner(&cache_k, cache->size + t_idx, &k);
 
 				tensor_t v;
 				tensor_at(&tok, 2, &v);
 				tensor_reshape_2d(&v, H, HLEN);
 				tensor_at(&v, h_idx, &v);
-				tensor_set_inner(&cache_v, t_idx, &v);
+				tensor_set_inner(&cache_v, cache->size + t_idx, &v);
 			}
 		}
 
@@ -274,12 +269,10 @@ static void transformer(struct gpt2 *model, tensor_t *input, tensor_t *output, s
 		tensor_div_scalar(masked_attn, masked_attn, model->hlen_sq);
 
 		if (prefill) {
-			/* causal mask: when processing multiple tokens at once,
-			 * prevent each position from attending to future tokens.
-			 * Not needed in decode since T==1 (single query row). */
-			for (size_t i = 0; i < AT; i++)
+			/* causal mask: token i (at pos cache->size+i) attends to 0..cache->size+i */
+			for (size_t i = 0; i < T; i++)
 				for (size_t j = 0; j < AT; j++)
-					if (j > i)
+					if (j > cache->size + i)
 						masked_attn->data[i * AT + j] = -1.0000e+04;
 		}
 
@@ -291,7 +284,9 @@ static void transformer(struct gpt2 *model, tensor_t *input, tensor_t *output, s
 		tensor_mma_2x2(qh, masked_attn, &cache_v, NULL);
 		tensor_assert_2d(qh, T, HLEN);
 
-		for (size_t t_idx = prefill ? 0 : AT - 1; t_idx < AT; t_idx++) {
+		size_t out_start = prefill ? 0 : AT - 1;
+		size_t out_end = prefill ? T : AT;
+		for (size_t t_idx = out_start; t_idx < out_end; t_idx++) {
 			tensor_t row;
 			tensor_at(qh, prefill ? t_idx : 0, &row);
 			tensor_assert_1d(&row, HLEN);
@@ -337,7 +332,7 @@ static void gpt2_forward(struct gpt2 *model, int *tok, int *pos, size_t T, tenso
 	tensor_resize(mlp_fc, T);
 	tensor_resize(output, T);
 
-	profiler_record(0, "pick");
+	tensor_trace(tokens, "embed");
 
 	for (size_t l = 0; l < model->layers; l++) {
 		struct gpt2h *hl = &model->hl[l];
@@ -346,49 +341,46 @@ static void gpt2_forward(struct gpt2 *model, int *tok, int *pos, size_t T, tenso
 
 		tensor_copy(tmp_mat, hidden_state);
 		layer_norm(output, tmp_mat, hl->ln_1_weight, hl->ln_1_bias);
-		profiler_record(1, "ln1");
+		tensor_trace(output, "L%zu.ln1", l);
 
 		tensor_mma_transposed_2x2(tokens_attn, output, a->c_attn_weight, a->c_attn_bias);
 		tensor_assert_2d(tokens_attn, T, 3 * E);
-		profiler_record(2, "c_attn");
+		tensor_trace(tokens_attn, "L%zu.c_attn", l);
 
 		transformer(model, tokens_attn, attn, l, mode);
-		profiler_record(3, "xformer");
+		tensor_trace(attn, "L%zu.attn", l);
 
 		tensor_mma_transposed_2x2(tmp_mat, attn, a->c_proj_weight, a->c_proj_bias);
-		profiler_record(4, "c_proj");
-
 		tensor_assert_2d(tmp_mat, T, E);
 		tensor_assert_2d(hidden_state, T, E);
 		tensor_add(tmp_mat, tmp_mat, hidden_state);
 		tensor_copy(attn_residual, tmp_mat);
-		profiler_record(5, "c_proj residual");
+		tensor_trace(tmp_mat, "L%zu.c_proj", l);
 
 		layer_norm(output, tmp_mat, hl->ln_2_weight, hl->ln_2_bias);
 		tensor_assert_2d(output, T, E);
-		profiler_record(6, "ln2");
+		tensor_trace(output, "L%zu.ln2", l);
 
 		tensor_mma_transposed_2x2(mlp_fc, output, mlp->c_fc_weight, mlp->c_fc_bias);
 		tensor_assert_2d(mlp_fc, T, E * 4);
-		profiler_record(7, "c_fc");
+		tensor_trace(mlp_fc, "L%zu.c_fc", l);
 
 		gelua(mlp_fc);
-		profiler_record(8, "gelua");
+		tensor_trace(mlp_fc, "L%zu.gelu", l);
 
 		tensor_mma_transposed_2x2(hidden_state, mlp_fc, mlp->c_proj_weight, mlp->c_proj_bias);
-		profiler_record(9, "c_proj");
 		tensor_add(hidden_state, hidden_state, attn_residual);
-		profiler_record(10, "c_proj residual");
+		tensor_trace(hidden_state, "L%zu.mlp_proj", l);
 	}
 
 	layer_norm(output, hidden_state, model->ln_f_weight, model->ln_f_bias);
-	profiler_record(11, "ln2 residual");
+	tensor_trace(output, "final_norm");
 }
 
 void gpt2_prefill(struct gpt2 *model, int *tok, int *pos, size_t T, tensor_t *output)
 {
 	gpt2_forward(model, tok, pos, T, output, KV_PREFILL);
-	model->cache->size = T;
+	model->cache->size += T;
 }
 
 void gpt2_decode(struct gpt2 *model, int tok, int pos, tensor_t *output)
@@ -423,15 +415,10 @@ void gpt2_generate(void *ctx, const char *text, int num, pick_token_t f, void *c
 	int *poss = malloc(C * sizeof(int));
 	assert(toks && poss);
 
-	int T = 0;
 	int tok;
-	while ((tok = vocab_decode(model->gguf, text, &tok_sz)) != -1) {
-		text += tok_sz;
-		assert(model->pos + T < (int)C);
-		toks[T] = tok;
-		poss[T] = model->pos + T;
-		T++;
-	}
+	int T = vocab_tokenize(model->gguf, text, toks, C);
+	for (int i = 0; i < T; i++)
+		poss[i] = model->pos + i;
 
 	uint64_t prefill_begin = profiler_now();
 	gpt2_prefill(model, toks, poss, T, output);

@@ -1,4 +1,5 @@
 #include "prompt.h"
+#include "vocab.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -215,21 +216,36 @@ struct chat_template *chat_template_load(struct gguf *g)
 	t->eos_after_assistant = asst_eos;
 	t->gen_prompt = find_gen_prompt(tmpl);
 
-	/* Fallback: detect Llama 3 style generic role template */
-	if (!t->user.prefix[0] && !t->gen_prompt &&
-	    find(tmpl, "<|start_header_id|>")) {
+	/* Fallback: detect Llama 3 style generic role template.
+	 * Templates that use message['role'] generically (without explicit
+	 * == 'user' checks) won't be parsed by parse_role_block, but
+	 * find_gen_prompt may still succeed. Trigger fallback whenever
+	 * user prefix is empty and the template looks like Llama 3. */
+	if (!t->user.prefix[0] && find(tmpl, "<|start_header_id|>")) {
 		free(t->user.prefix);
 		free(t->user.suffix);
 		free(t->assistant.prefix);
 		free(t->assistant.suffix);
+		free(t->gen_prompt);
 		t->user.prefix = strdup("<|start_header_id|>user<|end_header_id|>\n\n");
 		t->user.suffix = strdup("<|eot_id|>");
 		t->assistant.prefix = strdup("<|start_header_id|>assistant<|end_header_id|>\n\n");
 		t->assistant.suffix = strdup("<|eot_id|>");
 		t->gen_prompt = strdup("<|start_header_id|>assistant<|end_header_id|>\n\n");
-		t->system_preamble = strdup(
-			"<|start_header_id|>system<|end_header_id|>\n\n"
-			"You are a helpful assistant. Be concise.<|eot_id|>");
+
+	}
+
+	/* Build turn_end: what closes an assistant response for multi-turn */
+	{
+		const char *suf = t->assistant.suffix;
+		const char *eos = "";
+		if (t->eos_after_assistant)
+			eos = vocab_encode(g, t->eos_id);
+		size_t len = strlen(suf) + strlen(eos);
+		t->turn_end = malloc(len + 1);
+		t->turn_end[0] = '\0';
+		strcat(t->turn_end, suf);
+		strcat(t->turn_end, eos);
 	}
 
 	return t;
@@ -242,8 +258,10 @@ char *chat_template_apply(struct chat_template *t, const char *user_msg)
 
 	size_t len = strlen(t->user.prefix) + strlen(user_msg) +
 		     strlen(t->user.suffix);
-	if (t->system_preamble && !t->system_sent)
+	if (t->turn == 0 && t->system_preamble)
 		len += strlen(t->system_preamble);
+	if (t->turn > 0 && t->turn_end)
+		len += strlen(t->turn_end);
 	if (t->gen_prompt)
 		len += strlen(t->gen_prompt);
 	if (!t->gen_prompt && t->assistant.prefix[0])
@@ -252,10 +270,13 @@ char *chat_template_apply(struct chat_template *t, const char *user_msg)
 	char *out = malloc(len + 1);
 	out[0] = '\0';
 
-	if (t->system_preamble && !t->system_sent) {
+	/* On follow-up turns, close the previous assistant response */
+	if (t->turn > 0 && t->turn_end)
+		strcat(out, t->turn_end);
+
+	/* On first turn, prepend system preamble */
+	if (t->turn == 0 && t->system_preamble)
 		strcat(out, t->system_preamble);
-		t->system_sent = 1;
-	}
 
 	strcat(out, t->user.prefix);
 	strcat(out, user_msg);
@@ -265,6 +286,8 @@ char *chat_template_apply(struct chat_template *t, const char *user_msg)
 		strcat(out, t->gen_prompt);
 	else if (t->assistant.prefix[0])
 		strcat(out, t->assistant.prefix);
+
+	t->turn++;
 
 	return out;
 }
@@ -280,5 +303,6 @@ void chat_template_free(struct chat_template *t)
 	free(t->system.suffix);
 	free(t->gen_prompt);
 	free(t->system_preamble);
+	free(t->turn_end);
 	free(t);
 }

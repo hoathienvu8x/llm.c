@@ -15,8 +15,9 @@ struct chat_template {
 	struct chat_role system;
 	char *gen_prompt;        /* appended to trigger assistant generation */
 	char *system_preamble;   /* full system block to prepend on first turn */
+	char *turn_end;          /* closing sequence after assistant response */
 	int eos_after_assistant; /* append eos_token after assistant suffix */
-	int system_sent;         /* system preamble already emitted */
+	int turn;                /* turn counter (0 = first) */
 };
 
 struct chat_template *chat_template_load(struct gguf *g);
