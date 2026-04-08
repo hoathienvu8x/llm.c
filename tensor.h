@@ -36,8 +36,10 @@ void tensor_free(tensor_t *t);
 tensor_t *tensor_new_mapped(void *data, size_t totlen, enum tensor_dtype type);
 void tensor_free_mapped(const tensor_t *t);
 
+void tensor_fprint_shape(FILE *f, const tensor_t *t);
 char *tensor_to_string(const tensor_t *t);
 char *tensor_to_short_string(const tensor_t *t);
+char *tensor_to_debug_string(const tensor_t *t);
 void tensor_pick_rows(tensor_t *dst, const tensor_t *src, const int *rows, size_t num);
 
 static inline size_t tensor_len(const tensor_t *t)

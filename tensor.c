@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <stdarg.h>
+#include <math.h>
 
 static tensor_t *tensor_alloc(void *data, size_t ndim)
 {
@@ -495,5 +496,47 @@ scalar_t tensor_max(const tensor_t *lhs, size_t *pos)
 	}
 
 	return max;
+}
+
+void tensor_fprint_shape(FILE *f, const tensor_t *t)
+{
+	fprintf(f, "[");
+	for (uint32_t i = 0; i < t->ndim; i++) {
+		if (i) fprintf(f, ",");
+		fprintf(f, "%lu", (unsigned long)t->dim[i]);
+	}
+	fprintf(f, "]");
+}
+
+char *tensor_to_debug_string(const tensor_t *t)
+{
+	char *ptr;
+	size_t size;
+	FILE *f = open_memstream(&ptr, &size);
+
+	tensor_fprint_shape(f, t);
+
+	if (t->type == TENSOR_F32 && t->ndim >= 1) {
+		/* RMS norm of last row */
+		size_t row_len = t->dim[t->ndim - 1];
+		size_t n_rows = t->totlen / row_len;
+		const scalar_t *last = &t->data[(n_rows - 1) * row_len];
+
+		double sum = 0;
+		for (size_t i = 0; i < row_len; i++)
+			sum += (double)last[i] * last[i];
+		fprintf(f, " norm=%.6f ", sqrt(sum / row_len));
+
+		/* Last row values (compact) */
+		tensor_t view = {};
+		view.data = (scalar_t *)last;
+		view.ndim = 1;
+		view.dim[0] = row_len;
+		view.totlen = row_len;
+		tensor_to_string_inner(f, &view, 2);
+	}
+
+	fclose(f);
+	return ptr;
 }
 
