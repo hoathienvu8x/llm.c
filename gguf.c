@@ -237,6 +237,18 @@ static void read_kv(struct reader *r, struct gguf_kv *kv)
 			for (uint64_t i = 0; i < kv->arr.count; i++)
 				strs[i] = read_str(r);
 			kv->arr.data = strs;
+		} else if (kv->arr.elem_type == GGUF_TYPE_INT32) {
+			int32_t *vals = calloc(kv->arr.count, sizeof(*vals));
+			assert(vals);
+			for (uint64_t i = 0; i < kv->arr.count; i++)
+				vals[i] = (int32_t)read_u32(r);
+			kv->arr.data = vals;
+		} else if (kv->arr.elem_type == GGUF_TYPE_FLOAT32) {
+			float *vals = calloc(kv->arr.count, sizeof(*vals));
+			assert(vals);
+			for (uint64_t i = 0; i < kv->arr.count; i++)
+				vals[i] = read_f32(r);
+			kv->arr.data = vals;
 		} else {
 			for (uint64_t i = 0; i < kv->arr.count; i++)
 				skip_value(r, kv->arr.elem_type);
@@ -355,6 +367,12 @@ void gguf_close(struct gguf *g)
 		free(g->kv[i].key.str);
 		if (g->kv[i].type == GGUF_TYPE_STRING)
 			free(g->kv[i].str.str);
+		if (g->kv[i].type == GGUF_TYPE_ARRAY &&
+		    g->kv[i].arr.data &&
+		    (g->kv[i].arr.elem_type == GGUF_TYPE_INT32 ||
+		     g->kv[i].arr.elem_type == GGUF_TYPE_FLOAT32)) {
+			free(g->kv[i].arr.data);
+		}
 		if (g->kv[i].type == GGUF_TYPE_ARRAY &&
 		    g->kv[i].arr.elem_type == GGUF_TYPE_STRING &&
 		    g->kv[i].arr.data) {
@@ -570,4 +588,22 @@ const char *gguf_get_arr_str(const struct gguf *g, const char *key, size_t index
 	assert(index < kv->arr.count);
 	struct gguf_str *strs = kv->arr.data;
 	return strs[index].str;
+}
+
+int32_t gguf_get_arr_int32(const struct gguf *g, const char *key, size_t index)
+{
+	const struct gguf_kv *kv = gguf_find_kv(g, key);
+	assert(kv && kv->type == GGUF_TYPE_ARRAY);
+	assert(index < kv->arr.count);
+	int32_t *vals = kv->arr.data;
+	return vals[index];
+}
+
+float gguf_get_arr_float32(const struct gguf *g, const char *key, size_t index)
+{
+	const struct gguf_kv *kv = gguf_find_kv(g, key);
+	assert(kv && kv->type == GGUF_TYPE_ARRAY);
+	assert(index < kv->arr.count);
+	float *vals = kv->arr.data;
+	return vals[index];
 }
