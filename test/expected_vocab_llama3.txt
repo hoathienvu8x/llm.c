@@ -1,0 +1,13 @@
+hello world	15339 1917
+what's the capital of france?	12840 596 279 6864 315 48687 30
+In 2023, there were 1000 people	644 220 2366 18 11 1070 1051 220 1041 15 1274
+Cutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n	38766 1303 33025 2696 25 6790 220 2366 18 198 15724 2696 25 220 1627 10263 220 2366 19 271
+<|start_header_id|>user<|end_header_id|>\n\n	128006 882 128007 271
+<|eot_id|>	128009
+Hello! How are you? I'm fine.	9906 0 2650 527 499 30 358 2846 7060 13
+<|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is the capital of France?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n	128006 9125 128007 271 38766 1303 33025 2696 25 6790 220 2366 18 198 15724 2696 25 220 1627 10263 220 2366 19 271 128009 128006 882 128007 271 3923 374 279 6864 315 9822 30 128009 128006 78191 128007 271
+[INST] What is the capital of France? [/INST]	58 65562 60 3639 374 279 6864 315 9822 30 66028 65562 60
+  hello  	220 24748 256
+\n\n\n	1432
+12345678	4513 10961 2495
+2024-01-15	2366 19 12 1721 12 868
