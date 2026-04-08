@@ -206,11 +206,12 @@ void rope_apply(tensor_t *t, int pos, size_t head_len, float theta)
 			float cos_a = cosf(angle);
 			float sin_a = sinf(angle);
 
-			scalar_t x0 = head[i];
-			scalar_t x1 = head[i + half];
+			/* Standard RoPE: rotate consecutive pairs (2i, 2i+1) */
+			scalar_t x0 = head[2*i];
+			scalar_t x1 = head[2*i + 1];
 
-			head[i]        = x0 * cos_a - x1 * sin_a;
-			head[i + half] = x0 * sin_a + x1 * cos_a;
+			head[2*i]     = x0 * cos_a - x1 * sin_a;
+			head[2*i + 1] = x0 * sin_a + x1 * cos_a;
 		}
 	}
 }
