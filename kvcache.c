@@ -32,7 +32,12 @@ void kvcache_rotate(struct kvcache *kv)
 	size_t H = kv->heads;
 	size_t C = kv->context;
 	size_t HLEN = kv->head_len;
-	size_t half = C / 2;
+
+	/* With SWA, keep only the last window entries; otherwise keep half */
+	size_t keep = kv->sliding_window ? kv->sliding_window : C / 2;
+	if (keep > kv->size)
+		keep = kv->size;
+	size_t drop = kv->size - keep;
 
 	for (size_t i = 0; i < kv->layers; i++) {
 		scalar_t *kd = kv->hl[i].k->data;
@@ -42,12 +47,12 @@ void kvcache_rotate(struct kvcache *kv)
 			scalar_t *kb = kd + h * C * HLEN;
 			scalar_t *vb = vd + h * C * HLEN;
 
-			memmove(kb, kb + half * HLEN, (C - half) * HLEN * sizeof(scalar_t));
-			memmove(vb, vb + half * HLEN, (C - half) * HLEN * sizeof(scalar_t));
+			memmove(kb, kb + drop * HLEN, keep * HLEN * sizeof(scalar_t));
+			memmove(vb, vb + drop * HLEN, keep * HLEN * sizeof(scalar_t));
 		}
 	}
 
-	kv->size -= half;
+	kv->size = keep;
 }
 
 void kvcache_free(struct kvcache *kv)

@@ -16,6 +16,7 @@ struct kvcache {
 	size_t heads;
 	size_t head_len;
 	size_t layers;
+	size_t sliding_window; /* 0 = full attention */
 };
 
 struct kvcache *kvcache_alloc(size_t layers, size_t context, size_t heads, size_t head_len);

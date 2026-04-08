@@ -32,6 +32,7 @@ struct llama {
 	int pos;
 	scalar_t hlen_sq;
 	float rope_theta;
+	size_t sliding_window; /* 0 = full attention */
 
 	const tensor_t *wte;      /* token_embd.weight */
 	const tensor_t *lm_head;  /* output.weight */
@@ -95,6 +96,7 @@ void *llama_load(struct gguf *g)
 	model->top_k_experts = gguf_get_uint32_or(g, "llama.expert_used_count", 0);
 	model->expert_intermediate = gguf_get_uint32(g, "llama.feed_forward_length");
 	model->rope_theta = gguf_get_float32(g, "llama.rope.freq_base");
+	model->sliding_window = gguf_get_uint32_or(g, "llama.attention.sliding_window", 0);
 	model->bos_id = gguf_get_uint32(g, "tokenizer.ggml.bos_token_id");
 	model->eos_id = gguf_get_uint32(g, "tokenizer.ggml.eos_token_id");
 
@@ -112,13 +114,13 @@ void *llama_load(struct gguf *g)
 	assert(QH % KVH == 0);
 
 	if (NE > 0)
-		fprintf(stderr, "llama: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu NE=%zu topk=%zu EI=%zu theta=%.1f\n",
+		fprintf(stderr, "llama: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu NE=%zu topk=%zu EI=%zu theta=%.1f SWA=%zu\n",
 		        C, E, QH, KVH, HLEN, model->layers, model->vocab_len,
-		        NE, model->top_k_experts, EI, model->rope_theta);
+		        NE, model->top_k_experts, EI, model->rope_theta, model->sliding_window);
 	else
-		fprintf(stderr, "llama: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu EI=%zu theta=%.1f\n",
+		fprintf(stderr, "llama: C=%zu E=%zu QH=%zu KVH=%zu HLEN=%zu L=%zu V=%zu EI=%zu theta=%.1f SWA=%zu\n",
 		        C, E, QH, KVH, HLEN, model->layers, model->vocab_len,
-		        EI, model->rope_theta);
+		        EI, model->rope_theta, model->sliding_window);
 
 	model->hl = calloc(model->layers, sizeof(*model->hl));
 	assert(model->hl);
@@ -185,6 +187,7 @@ void *llama_load(struct gguf *g)
 
 	model->cache = kvcache_alloc(model->layers, C, KVH, HLEN);
 	assert(model->cache);
+	model->cache->sliding_window = model->sliding_window;
 
 	uint64_t totmem = 0;
 	totmem += model->state.output->maxcap;
@@ -221,7 +224,7 @@ void *llama_load(struct gguf *g)
  * Each KV head serves (q_heads / kv_heads) Q heads.
  * We iterate over KV heads and process the Q head group for each. */
 static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t *v,
-                         tensor_t *output, size_t l, enum kv_mode mode)
+                         tensor_t *output, size_t l, int *pos, enum kv_mode mode)
 {
 	tensor_t *qh = model->state.qh;
 	tensor_t *masked_attn = model->state.masked_attn;
@@ -309,10 +312,14 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 			tensor_div_scalar(masked_attn, masked_attn, model->hlen_sq);
 
 			if (prefill) {
+				size_t swa = model->sliding_window;
 				for (size_t i = 0; i < T; i++)
-					for (size_t j = 0; j < AT; j++)
-						if (j > cache->size + i)
+					for (size_t j = 0; j < AT; j++) {
+						int causal = j > cache->size + i;
+						int outside = swa && pos[i] - (int)j >= (int)swa;
+						if (causal || outside)
 							masked_attn->data[i * AT + j] = -INFINITY;
+					}
 			}
 
 			softmax_2d(masked_attn);
@@ -482,7 +489,7 @@ static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
 		tensor_trace(NULL, "L%zu.rope", l);
 
 		/* GQA multi-head attention */
-		transformer(model, q, k, v, attn, l, mode);
+		transformer(model, q, k, v, attn, l, pos, mode);
 		tensor_trace(attn, "L%zu.attn", l);
 
 		/* Output projection + residual */
