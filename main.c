@@ -74,7 +74,8 @@ static void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 
 static size_t recent_tokens[64];
 static int recent_count;
-static int eos_id = -1; /* set to suppress EOS output in chat mode */
+static int eos_id = -1;
+static int suppress_eos; /* don't print EOS token in chat mode */
 
 static struct {
 	const struct model *model;
@@ -217,7 +218,7 @@ static size_t on_token(void *ctx, tensor_t *logits)
 	if (tool.active)
 		return tools_capture_token(g, token);
 
-	if ((int)token != eos_id) {
+	if (!suppress_eos || (int)token != eos_id) {
 		printf("%s", vocab_encode(g, token));
 		fflush(stdout);
 	}
@@ -312,7 +313,7 @@ static void tools_generate(const struct model *m, void *ctx,
 	m->generate(ctx, prompt, cfg.max_tokens, on_token, g);
 	free(prompt);
 
-	while (tool.active && m->tools_wrap_result) {
+	for (int round = 0; tool.active && m->tools_wrap_result && round < 5; round++) {
 		char *call = tools_finish_capture();
 		tools_trace("tool_call", call);
 
@@ -473,6 +474,8 @@ int main(int argc, char *argv[])
 
 	struct chat_template *tmpl = chat_template_load(g);
 
+	eos_id = gguf_get_uint32(g, "tokenizer.ggml.eos_token_id");
+
 	if (argpos + 1 < argc) {
 		char *inp = join_args(argc - argpos - 1, argv + argpos + 1);
 		recent_count = 0;
@@ -484,7 +487,7 @@ int main(int argc, char *argv[])
 		generate(m, ctx, NULL, g, inp);
 		free(inp);
 	} else {
-		eos_id = gguf_get_uint32(g, "tokenizer.ggml.eos_token_id");
+		suppress_eos = 1;
 		chat_loop(m, ctx, tmpl, g);
 	}
 

@@ -729,12 +729,15 @@ static int llama_tools_detect(void *ctx, int tok)
 
 static char *llama_tools_wrap_result(void *ctx, const char *result)
 {
-	char *ptr;
-	size_t size;
-	FILE *f = open_memstream(&ptr, &size);
-	fprintf(f, "[TOOL_RESULTS] %s [/TOOL_RESULTS]", result);
-	fclose(f);
-	return ptr;
+	jsonw_t *j = jsonw_new();
+	fprintf(j->f, "[TOOL_RESULTS]");
+	jsonw_obj(j);
+	jsonw_key(j, "content");
+	fprintf(j->f, "%s", result);
+	j->need_comma = 1;
+	jsonw_obj_end(j);
+	fprintf(j->f, "[/TOOL_RESULTS]");
+	return jsonw_done(j);
 }
 
 static const struct model llama_model = {
