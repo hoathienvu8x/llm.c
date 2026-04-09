@@ -6,6 +6,7 @@
 #include "kvcache.h"
 #include "simd.h"
 #include "tensor_trace.h"
+#include "json.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -453,17 +454,21 @@ void gpt2_generate(void *ctx, const char *text, int num, pick_token_t f, void *c
 
 		if (model->pos && model->pos % 100 == 0) {
 			uint64_t end = profiler_now();
-			fprintf(stderr, "[%d tokens, %.9f tok/sec]", model->pos, (100/profiler_to_sec(end-batch_begin)));
+			jsonw_t *j = trace_begin("decode");
+			jsonw_num(j, "tokens", model->pos);
+			jsonw_num(j, "tok_per_sec", 100/profiler_to_sec(end-batch_begin));
+			trace_end(j);
 			batch_begin = end;
 		}
 	}
 	uint64_t decode_end = profiler_now();
-	fprintf(stderr, "\n");
 
-	fprintf(stderr, "prefill=%fs (%d tokens) decode=%fs total=%fs\n",
-	        profiler_to_sec(prefill_end - prefill_begin), T,
-	        profiler_to_sec(decode_end - decode_begin),
-	        profiler_to_sec(decode_end - total_begin));
+	jsonw_t *j = trace_begin("generate");
+	jsonw_num(j, "prefill_sec", profiler_to_sec(prefill_end - prefill_begin));
+	jsonw_num(j, "prefill_tokens", T);
+	jsonw_num(j, "decode_sec", profiler_to_sec(decode_end - decode_begin));
+	jsonw_num(j, "total_sec", profiler_to_sec(decode_end - total_begin));
+	trace_end(j);
 
 	free(toks);
 	free(poss);

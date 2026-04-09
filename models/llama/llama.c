@@ -6,6 +6,8 @@
 #include "kvcache.h"
 #include "simd.h"
 #include "tensor_trace.h"
+#include "tools.h"
+#include "json.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -33,6 +35,7 @@ struct llama {
 	scalar_t hlen_sq;
 	float rope_theta;
 	size_t sliding_window; /* 0 = full attention */
+	int tool_calls_token;  /* -1 = no tool support */
 
 	const tensor_t *wte;      /* token_embd.weight */
 	const tensor_t *lm_head;  /* output.weight */
@@ -99,6 +102,7 @@ void *llama_load(struct gguf *g)
 	model->sliding_window = gguf_get_uint32_or(g, "llama.attention.sliding_window", 0);
 	model->bos_id = gguf_get_uint32(g, "tokenizer.ggml.bos_token_id");
 	model->eos_id = gguf_get_uint32(g, "tokenizer.ggml.eos_token_id");
+	model->tool_calls_token = vocab_decode(g, "[TOOL_CALLS]", NULL);
 
 	size_t C = model->context;
 	size_t HLEN = model->head_len;
@@ -610,17 +614,21 @@ void llama_generate(void *ctx, const char *text, int num, pick_token_t f, void *
 
 		if (model->pos && model->pos % 100 == 0) {
 			uint64_t end = profiler_now();
-			fprintf(stderr, "[%d tokens, %.9f tok/sec]", model->pos, (100/profiler_to_sec(end-batch_begin)));
+			jsonw_t *j = trace_begin("decode");
+			jsonw_num(j, "tokens", model->pos);
+			jsonw_num(j, "tok_per_sec", 100/profiler_to_sec(end-batch_begin));
+			trace_end(j);
 			batch_begin = end;
 		}
 	}
 	uint64_t decode_end = profiler_now();
-	fprintf(stderr, "\n");
 
-	fprintf(stderr, "prefill=%fs (%d tokens) decode=%fs total=%fs\n",
-	        profiler_to_sec(prefill_end - prefill_begin), T,
-	        profiler_to_sec(decode_end - decode_begin),
-	        profiler_to_sec(decode_end - total_begin));
+	jsonw_t *j = trace_begin("generate");
+	jsonw_num(j, "prefill_sec", profiler_to_sec(prefill_end - prefill_begin));
+	jsonw_num(j, "prefill_tokens", T);
+	jsonw_num(j, "decode_sec", profiler_to_sec(decode_end - decode_begin));
+	jsonw_num(j, "total_sec", profiler_to_sec(decode_end - total_begin));
+	trace_end(j);
 
 	free(toks);
 	free(poss);
@@ -678,11 +686,65 @@ void llama_close(void *ctx)
 	free(model);
 }
 
+/* Mistral tool calling format:
+ *   [AVAILABLE_TOOLS] [json] [/AVAILABLE_TOOLS]
+ *   [TOOL_CALLS] [json]</s>
+ *   [TOOL_RESULTS] result [/TOOL_RESULTS] */
+
+static char *llama_tools_format(void *ctx)
+{
+	struct llama *model = ctx;
+	int n = tools_get_count();
+	if (model->tool_calls_token < 0 || n == 0)
+		return strdup("");
+
+	jsonw_t *j = jsonw_new();
+	/* Raw prefix — not JSON, so write directly */
+	fprintf(j->f, "[AVAILABLE_TOOLS] ");
+
+	jsonw_arr(j);
+	for (int i = 0; i < n; i++) {
+		const struct tool *t = tools_get(i);
+		jsonw_obj(j);
+		jsonw_str(j, "type", "function");
+		jsonw_key(j, "function");
+		jsonw_obj(j);
+		jsonw_str(j, "name", t->name);
+		jsonw_str(j, "description", t->description);
+		tools_format_params(j, t);
+		jsonw_obj_end(j);
+		jsonw_obj_end(j);
+	}
+	jsonw_arr_end(j);
+
+	fprintf(j->f, " [/AVAILABLE_TOOLS]");
+	return jsonw_done(j);
+}
+
+static int llama_tools_detect(void *ctx, int tok)
+{
+	struct llama *model = ctx;
+	return model->tool_calls_token >= 0 && tok == model->tool_calls_token;
+}
+
+static char *llama_tools_wrap_result(void *ctx, const char *result)
+{
+	char *ptr;
+	size_t size;
+	FILE *f = open_memstream(&ptr, &size);
+	fprintf(f, "[TOOL_RESULTS] %s [/TOOL_RESULTS]", result);
+	fclose(f);
+	return ptr;
+}
+
 static const struct model llama_model = {
 	.name = "llama",  /* Mixtral uses llama architecture in GGUF */
 	.load = llama_load,
 	.generate = llama_generate,
 	.close = llama_close,
+	.tools_format = llama_tools_format,
+	.tools_detect = llama_tools_detect,
+	.tools_wrap_result = llama_tools_wrap_result,
 };
 
 __attribute__((constructor))

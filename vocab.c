@@ -428,7 +428,7 @@ int vocab_decode(struct gguf *g, const char *s, int *sz)
 			int slen = (end + 2) - s;
 			int idx = ht_lookup(ht, s, slen);
 			if (idx >= 0) {
-				*sz = slen;
+				if (sz) *sz = slen;
 				return idx;
 			}
 		}
@@ -439,7 +439,7 @@ int vocab_decode(struct gguf *g, const char *s, int *sz)
 			int slen = (end + 1) - s;
 			int idx = ht_lookup(ht, s, slen);
 			if (idx >= 0) {
-				*sz = slen;
+				if (sz) *sz = slen;
 				return idx;
 			}
 		}
@@ -471,7 +471,7 @@ int vocab_decode(struct gguf *g, const char *s, int *sz)
 		}
 	}
 
-	*sz = best_len;
+	if (sz) *sz = best_len;
 	return best_idx;
 }
 

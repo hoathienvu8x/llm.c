@@ -24,6 +24,7 @@ O=3
 MODEL_DIRS=$(wildcard models/*)
 MODEL_CFLAGS=$(addprefix -I,$(MODEL_DIRS))
 MODEL_SRCS=$(wildcard models/*/*.c)
+TOOL_SRCS=$(wildcard tools/*.c)
 
 CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. $(MODEL_CFLAGS) -O$(O) -march=native -rdynamic
 LDFLAGS=$(SLEEF_LDFLAGS) $(BLAS_LDFLAGS)
@@ -49,7 +50,7 @@ download:
 	test -f llama-3.2-3b-instruct-Q4_K_M.gguf || models/llama/download_gguf.sh
 
 build:
-	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c prompt.c $(COMMON_SRCS) tensor_trace.c $(LIBS) -o llmc
+	$(CC) $(LDFLAGS) $(CFLAGS) -g main.c $(MODEL_SRCS) $(TOOL_SRCS) model.c nn.c kvcache.c gguf.c vocab.c prompt.c tools.c json.c $(COMMON_SRCS) tensor_trace.c $(LIBS) -o llmc
 
 run: build
 	./llmc mistral-7b-instruct-v0.3-Q4_K_M.gguf

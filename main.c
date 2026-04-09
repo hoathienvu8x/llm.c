@@ -3,6 +3,7 @@
 #include "vocab.h"
 #include "prompt.h"
 #include "tensor_trace.h"
+#include "tools.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +75,63 @@ static void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 static size_t recent_tokens[64];
 static int recent_count;
 static int eos_id = -1; /* set to suppress EOS output in chat mode */
+
+static struct {
+	const struct model *model;
+	void *model_ctx;
+	FILE *stream;
+	char *buf;
+	size_t size;
+	int active;
+} tool;
+
+static void tools_reset(const struct model *m, void *ctx)
+{
+	tool.model = m;
+	tool.model_ctx = ctx;
+	tool.active = 0;
+}
+
+static int tools_start_capture(int token)
+{
+	if (!tool.model->tools_detect ||
+	    !tool.model->tools_detect(tool.model_ctx, token))
+		return 0;
+
+	tool.active = 1;
+	if (tool.stream)
+		fclose(tool.stream);
+	free(tool.buf);
+	tool.buf = NULL;
+	tool.stream = open_memstream(&tool.buf, &tool.size);
+	return 1;
+}
+
+static char *tools_finish_capture(void)
+{
+	if (tool.stream) {
+		fclose(tool.stream);
+		tool.stream = NULL;
+	}
+	return tool.buf;
+}
+
+static size_t tools_capture_token(struct gguf *g, size_t token)
+{
+	if (token == eos_id)
+		return token;
+	fputs(vocab_encode(g, token), tool.stream);
+	fflush(tool.stream);
+
+	/* Force stop once JSON array closes */
+	if (tool.size > 2) {
+		const char *p = tool.buf + tool.size - 1;
+		while (p > tool.buf && (*p == ' ' || *p == '\n')) p--;
+		if (*p == ']')
+			return (size_t)eos_id;
+	}
+	return token;
+}
 
 static size_t on_token(void *ctx, tensor_t *logits)
 {
@@ -152,6 +210,13 @@ static size_t on_token(void *ctx, tensor_t *logits)
 		recent_tokens[63] = token;
 	}
 
+	/* Tool call detection: buffer output instead of printing */
+	if (tools_start_capture(token))
+		return token;
+
+	if (tool.active)
+		return tools_capture_token(g, token);
+
 	if ((int)token != eos_id) {
 		printf("%s", vocab_encode(g, token));
 		fflush(stdout);
@@ -210,6 +275,59 @@ static char *join_args(int argc, char **argv)
 	return buf;
 }
 
+static char *tools_prepend(const struct model *m, void *ctx, char *prompt)
+{
+	if (!m->tools_format)
+		return prompt;
+
+	char *desc = m->tools_format(ctx);
+	if (!desc[0]) {
+		free(desc);
+		return prompt;
+	}
+
+	size_t len = strlen(desc) + strlen(prompt) + 1;
+	char *out = malloc(len);
+	out[0] = '\0';
+	strcat(out, desc);
+	strcat(out, prompt);
+	free(desc);
+	free(prompt);
+	return out;
+}
+
+static void tools_trace(const char *event, const char *data)
+{
+	jsonw_t *j = trace_begin(event);
+	jsonw_key(j, "data");
+	fprintf(j->f, "%s", data);
+	j->need_comma = 1;
+	trace_end(j);
+}
+
+static void tools_generate(const struct model *m, void *ctx,
+			    struct gguf *g, char *prompt)
+{
+	tools_reset(m, ctx);
+	m->generate(ctx, prompt, cfg.max_tokens, on_token, g);
+	free(prompt);
+
+	while (tool.active && m->tools_wrap_result) {
+		char *call = tools_finish_capture();
+		tools_trace("tool_call", call);
+
+		char *result = tools_execute(call);
+		tools_trace("tool_result", result);
+
+		char *result_prompt = m->tools_wrap_result(ctx, result);
+		free(result);
+
+		tools_reset(m, ctx);
+		m->generate(ctx, result_prompt, cfg.max_tokens, on_token, g);
+		free(result_prompt);
+	}
+}
+
 static void generate(const struct model *m, void *ctx,
 		     struct chat_template *tmpl, struct gguf *g,
 		     const char *input)
@@ -227,10 +345,11 @@ static void generate(const struct model *m, void *ctx,
 		}
 	}
 
-	char *prompt = chat_template_apply(tmpl, input);
+	char *user_prompt = chat_template_apply(tmpl, input);
 	free(trimmed);
-	m->generate(ctx, prompt, cfg.max_tokens, on_token, g);
-	free(prompt);
+	char *prompt = tools_prepend(m, ctx, user_prompt);
+
+	tools_generate(m, ctx, g, prompt);
 }
 
 static void chat_loop(const struct model *m, void *ctx,
