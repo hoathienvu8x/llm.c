@@ -26,7 +26,7 @@ MODEL_CFLAGS=$(addprefix -I,$(MODEL_DIRS))
 MODEL_SRCS=$(wildcard models/*/*.c)
 TOOL_SRCS=$(wildcard tools/*.c)
 
-CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. $(MODEL_CFLAGS) -O$(O) -march=native -rdynamic
+CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. $(MODEL_CFLAGS) -O$(O) -march=native -rdynamic -DFLASH_ATTENTION
 LDFLAGS=$(SLEEF_LDFLAGS) $(BLAS_LDFLAGS)
 CC=clang
 

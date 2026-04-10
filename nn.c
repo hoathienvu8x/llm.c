@@ -304,3 +304,143 @@ void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 		}
 	}
 }
+
+/*
+ * Flash Attention (https://github.com/dao-ailab/flash-attention)
+ *
+ * Standard attention materializes the full [T, AT] score matrix:
+ *   S = Q @ K^T / sqrt(d)
+ *   S = mask(S)
+ *   P = softmax(S)          ← [T, AT], the bottleneck
+ *   O = P @ V
+ *
+ * Flash attention avoids this by processing K/V in blocks and
+ * computing softmax incrementally ("online softmax"):
+ *
+ *   for each K_block, V_block of size [Bk, D]:
+ *       S = Q @ K_block^T / sqrt(d)        # small [T, Bk] tile
+ *       S = mask(S)
+ *       m_new = max(m, rowmax(S))          # update running max
+ *       correction = exp(m_old - m_new)    # rescale previous results
+ *       P = exp(S - m_new)                 # local softmax numerators
+ *       O = O * correction + P @ V_block   # accumulate weighted values
+ *       l = l * correction + rowsum(P)     # accumulate denominator
+ *   O = O / l                              # final normalize
+ *
+ * Memory: O(T * Bk) instead of O(T * AT). For a 4K context with
+ * Bk=64, this is 256KB instead of 64MB per head.
+ */
+#define FA_BLOCK 64
+
+void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
+		     const tensor_t *v, scalar_t scale,
+		     size_t cache_size, size_t swa)
+{
+	size_t T = q->dim[0];
+	size_t AT = k->dim[0];
+	size_t D = q->dim[1];
+
+	/* Copy Q if aliased with output */
+	scalar_t qbuf[T * D];
+	const scalar_t *qdata = q->data;
+	if (tensor_aliases(out, q)) {
+		memcpy(qbuf, q->data, T * D * sizeof(scalar_t));
+		qdata = qbuf;
+	}
+
+	/* Per-row running state for online softmax */
+	scalar_t m[T], l[T];
+	for (size_t i = 0; i < T; i++) {
+		m[i] = -INFINITY;
+		l[i] = 0;
+	}
+	memset(out->data, 0, T * D * sizeof(scalar_t));
+
+	scalar_t s[T * FA_BLOCK];
+
+	for (size_t j0 = 0; j0 < AT; j0 += FA_BLOCK) {
+		size_t Bk = (j0 + FA_BLOCK <= AT) ? FA_BLOCK : AT - j0;
+
+		/* S = Q[T,D] @ K[j0:j0+Bk, D]^T → [T, Bk], scaled */
+		for (size_t i = 0; i < T; i++)
+			for (size_t j = 0; j < Bk; j++) {
+				const scalar_t *qi = &qdata[i * D];
+				const scalar_t *kj = &k->data[(j0 + j) * D];
+				vector_t acc;
+				vector_set(&acc, 0);
+				for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+					vector_t vq, vk;
+					vector_load(&vq, (scalar_t *)&qi[d]);
+					vector_load(&vk, (scalar_t *)&kj[d]);
+					vector_fma(&acc, &vq, &vk, &acc);
+				}
+				s[i * Bk + j] = vector_reduce_sum(&acc) * scale;
+			}
+
+		/* Causal + SWA mask */
+		for (size_t i = 0; i < T; i++)
+			for (size_t j = 0; j < Bk; j++) {
+				size_t kpos = j0 + j;
+				if (kpos > cache_size + i)
+					s[i * Bk + j] = -INFINITY;
+				if (swa && (int)(cache_size + i) - (int)kpos >= (int)swa)
+					s[i * Bk + j] = -INFINITY;
+			}
+
+		/* Online softmax + accumulate output */
+		for (size_t i = 0; i < T; i++) {
+			scalar_t *oi = &out->data[i * D];
+
+			/* Block max */
+			scalar_t mi = -INFINITY;
+			for (size_t j = 0; j < Bk; j++)
+				if (s[i * Bk + j] > mi)
+					mi = s[i * Bk + j];
+
+			scalar_t m_new = m[i] > mi ? m[i] : mi;
+			scalar_t correction = expf(m[i] - m_new);
+
+			/* Rescale previous accumulator */
+			vector_t vcorr;
+			vector_set(&vcorr, correction);
+			for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+				vector_t vo;
+				vector_load(&vo, &oi[d]);
+				vector_mul(&vo, &vo, &vcorr);
+				vector_store(&oi[d], &vo);
+			}
+			l[i] *= correction;
+
+			/* Accumulate this block */
+			for (size_t j = 0; j < Bk; j++) {
+				scalar_t p = expf(s[i * Bk + j] - m_new);
+				l[i] += p;
+				const scalar_t *vj = &v->data[(j0 + j) * D];
+				vector_t vp;
+				vector_set(&vp, p);
+				for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+					vector_t vo, vv;
+					vector_load(&vo, &oi[d]);
+					vector_load(&vv, (scalar_t *)&vj[d]);
+					vector_fma(&vo, &vp, &vv, &vo);
+					vector_store(&oi[d], &vo);
+				}
+			}
+
+			m[i] = m_new;
+		}
+	}
+
+	/* Final normalize */
+	for (size_t i = 0; i < T; i++) {
+		scalar_t *oi = &out->data[i * D];
+		vector_t vinv;
+		vector_set(&vinv, 1.0f / l[i]);
+		for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+			vector_t vo;
+			vector_load(&vo, &oi[d]);
+			vector_mul(&vo, &vo, &vinv);
+			vector_store(&oi[d], &vo);
+		}
+	}
+}

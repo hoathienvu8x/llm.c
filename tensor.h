@@ -42,6 +42,11 @@ char *tensor_to_short_string(const tensor_t *t);
 char *tensor_to_debug_string(const tensor_t *t);
 void tensor_pick_rows(tensor_t *dst, const tensor_t *src, const int *rows, size_t num);
 
+static inline int tensor_aliases(const tensor_t *a, const tensor_t *b)
+{
+	return a->data == b->data;
+}
+
 static inline size_t tensor_len(const tensor_t *t)
 {
 	if (t->ndim == 0)

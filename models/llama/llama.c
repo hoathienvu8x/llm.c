@@ -311,6 +311,11 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 			tensor_assert_2d(&cache_k, AT, HLEN);
 			tensor_assert_2d(&cache_v, AT, HLEN);
 
+#ifdef FLASH_ATTENTION
+			flash_attention(qh, qh, &cache_k, &cache_v,
+					1.0f / model->hlen_sq, cache->size,
+					model->sliding_window);
+#else
 			tensor_mma_transposed_2x2(masked_attn, qh, &cache_k, NULL);
 			tensor_assert_2d(masked_attn, T, AT);
 			tensor_div_scalar(masked_attn, masked_attn, model->hlen_sq);
@@ -329,6 +334,7 @@ static void transformer(struct llama *model, tensor_t *q, tensor_t *k, tensor_t 
 			softmax_2d(masked_attn);
 
 			tensor_mma_2x2(qh, masked_attn, &cache_v, NULL);
+#endif
 			tensor_assert_2d(qh, T, HLEN);
 
 			/* Write back to output at the correct Q head position */
