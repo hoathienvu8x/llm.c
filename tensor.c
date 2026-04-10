@@ -296,7 +296,7 @@ void tensor_set(tensor_t *ret, scalar_t val)
 
 	vector_set(&v, val);
 
-	for (size_t i = 0; i < vector_batches(ret->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, ret->totlen) {
 		vector_store(&ret->data[i], &v);
 	}
 
@@ -322,7 +322,7 @@ void tensor_add(
 
 	tensor_check_same_size(ret, lhs, rhs);
 
-	for (size_t i = 0; i < vector_batches(ret->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, ret->totlen) {
 		vector_load(&l, &lhs->data[i]);
 		vector_load(&r, &rhs->data[i]);
 		vector_add(&r, &r, &l);
@@ -360,7 +360,7 @@ void tensor_sub(
 
 	tensor_check_same_size(ret, lhs, rhs);
 
-	for (size_t i = 0; i < vector_batches(ret->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, ret->totlen) {
 		vector_load(&l, &lhs->data[i]);
 		vector_load(&r, &rhs->data[i]);
 		vector_sub(&r, &l, &r);
@@ -381,7 +381,7 @@ void tensor_mul(
 
 	tensor_check_same_size(ret, lhs, rhs);
 
-	for (size_t i = 0; i < vector_batches(ret->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, ret->totlen) {
 		vector_load(&l, &lhs->data[i]);
 		vector_load(&r, &rhs->data[i]);
 		vector_mul(&r, &r, &l);
@@ -402,7 +402,7 @@ void tensor_div(
 
 	tensor_check_same_size(ret, lhs, rhs);
 
-	for (size_t i = 0; i < vector_batches(ret->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, ret->totlen) {
 		vector_load(&l, &lhs->data[i]);
 		vector_load(&r, &rhs->data[i]);
 		vector_div(&r, &l, &r);
@@ -426,7 +426,7 @@ void tensor_div_scalar(
 
 	vector_set(&vscalar, scalar);
 
-	for (size_t i = 0; i < vector_batches(ret->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, ret->totlen) {
 		vector_load(&vtmp, &lhs->data[i]);
 		vector_div(&vtmp, &vtmp, &vscalar);
 		vector_store(&ret->data[i], &vtmp);
@@ -439,19 +439,18 @@ void tensor_div_scalar(
 
 scalar_t tensor_mean(const tensor_t *lhs)
 {
-	size_t nr = 0;
 	vector_t t, s;
 
 	vector_set(&s, 0);
 
-	for (size_t i = 0; i < vector_batches(lhs->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, lhs->totlen) {
 		vector_load(&t, &lhs->data[i]);
 		vector_add(&s, &s, &t);
-		nr += VECTOR_BATCH;
 	}
 
 	scalar_t sum = vector_reduce_sum(&s);
-	for (size_t i = vector_batches(lhs->totlen); i < lhs->totlen; i++) {
+	size_t nr = vector_batches(lhs->totlen);
+	for (size_t i = nr; i < lhs->totlen; i++) {
 		sum += lhs->data[i];
 		nr++;
 	}
@@ -466,7 +465,7 @@ scalar_t tensor_max(const tensor_t *lhs, size_t *pos)
 	scalar_t res;
 	vector_t t;
 
-	for (size_t i = 0; i < vector_batches(lhs->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, lhs->totlen) {
 		vector_load(&t, &lhs->data[i]);
 		res = vector_reduce_max(&t);
 		if (res > max) {
@@ -483,13 +482,14 @@ scalar_t tensor_max(const tensor_t *lhs, size_t *pos)
 	}
 
 	if (pos) {
-		size_t tail = lhs->totlen - max_pos;
-		if (tail > VECTOR_BATCH)
-			tail = VECTOR_BATCH;
+		/* max_pos is vector-aligned; find exact index within that lane */
+		size_t end = max_pos + VECTOR_BATCH;
+		if (end > lhs->totlen)
+			end = lhs->totlen;
 
-		for (size_t i = 0; i < tail; i++) {
-			if (lhs->data[max_pos + i] == max) {
-				*pos = max_pos + i;
+		for (size_t i = max_pos; i < end; i++) {
+			if (lhs->data[i] == max) {
+				*pos = i;
 				break;
 			}
 		}

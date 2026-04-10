@@ -15,7 +15,7 @@ void rms_norm(tensor_t *ln, tensor_t *tmp_mat, const tensor_t *weight)
 
 		size_t len = tensor_len(&row);
 
-		for (size_t j = 0; j < vector_batches(len); j += VECTOR_BATCH) {
+		for_each_vec(j, len) {
 			vector_t tmp;
 
 			vector_load(&tmp, &row.data[j]);
@@ -31,7 +31,7 @@ void rms_norm(tensor_t *ln, tensor_t *tmp_mat, const tensor_t *weight)
 		vector_t vrms;
 		vector_set(&vrms, rms);
 
-		for (size_t j = 0; j < vector_batches(len); j += VECTOR_BATCH) {
+		for_each_vec(j, len) {
 			vector_t tmp;
 
 			vector_load(&tmp, &row.data[j]);
@@ -68,7 +68,7 @@ void layer_norm(
 
 		size_t len = tensor_len(&row);
 
-		for (size_t j = 0; j < vector_batches(len); j += VECTOR_BATCH) {
+		for_each_vec(j, len) {
 			vector_t tmp;
 
 			vector_load(&tmp, &row.data[j]);
@@ -88,7 +88,7 @@ void layer_norm(
 		vector_t vsqrt;
 		vector_set(&vsqrt, var_sqrt);
 
-		for (size_t j = 0; j < vector_batches(len); j += VECTOR_BATCH) {
+		for_each_vec(j, len) {
 			vector_t tmp;
 
 			vector_load(&tmp, &row.data[j]);
@@ -130,7 +130,7 @@ void gelua(tensor_t *t)
 	vector_t half;
 	vector_set(&half, 0.5);
 
-	for (size_t i = 0; i < vector_batches(t->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, t->totlen) {
 		vector_load(&vinp, &t->data[i]);
 
 		/* 1.0 + GELU_K2 * inp * inp */
@@ -165,7 +165,7 @@ void gelua(tensor_t *t)
 
 void silu(tensor_t *t)
 {
-	for (size_t i = 0; i < vector_batches(t->totlen); i += VECTOR_BATCH) {
+	for_each_vec(i, t->totlen) {
 		vector_t vinp, vneg, vexp, vone, vdenom;
 
 		vector_load(&vinp, &t->data[i]);
@@ -231,7 +231,7 @@ void softmax_1d(tensor_t *t)
 	vector_set(&vsum, 0);
 	vector_set(&vmax, max);
 
-	for (size_t i = 0; i < vector_batches(len); i += VECTOR_BATCH) {
+	for_each_vec(i, len) {
 		vector_t vtmp;
 
 		vector_load(&vtmp, &t->data[i]);
@@ -247,7 +247,7 @@ void softmax_1d(tensor_t *t)
 	}
 
 	vector_set(&vsum, sum);
-	for (size_t i = 0; i < vector_batches(len); i += VECTOR_BATCH) {
+	for_each_vec(i, len) {
 		vector_t tmp;
 
 		vector_load(&tmp, &t->data[i]);
@@ -368,7 +368,7 @@ void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
 				const scalar_t *kj = &k->data[(j0 + j) * D];
 				vector_t acc;
 				vector_set(&acc, 0);
-				for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+				for_each_vec(d, D) {
 					vector_t vq, vk;
 					vector_load(&vq, (scalar_t *)&qi[d]);
 					vector_load(&vk, (scalar_t *)&kj[d]);
@@ -403,7 +403,7 @@ void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
 			/* Rescale previous accumulator */
 			vector_t vcorr;
 			vector_set(&vcorr, correction);
-			for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+			for_each_vec(d, D) {
 				vector_t vo;
 				vector_load(&vo, &oi[d]);
 				vector_mul(&vo, &vo, &vcorr);
@@ -418,7 +418,7 @@ void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
 				const scalar_t *vj = &v->data[(j0 + j) * D];
 				vector_t vp;
 				vector_set(&vp, p);
-				for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+				for_each_vec(d, D) {
 					vector_t vo, vv;
 					vector_load(&vo, &oi[d]);
 					vector_load(&vv, (scalar_t *)&vj[d]);
@@ -436,7 +436,7 @@ void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
 		scalar_t *oi = &out->data[i * D];
 		vector_t vinv;
 		vector_set(&vinv, 1.0f / l[i]);
-		for (size_t d = 0; d < D; d += VECTOR_BATCH) {
+		for_each_vec(d, D) {
 			vector_t vo;
 			vector_load(&vo, &oi[d]);
 			vector_mul(&vo, &vo, &vinv);

@@ -39,9 +39,12 @@ typedef cpu_vector_t vector_t;
 
 #define VECTOR_ALIGN (sizeof(scalar_t) * VECTOR_BATCH)
 
-static inline size_t vector_batches(size_t size)
+#define for_each_vec(var, len) \
+	for (size_t var = 0; var < vector_batches(len); var += VECTOR_BATCH)
+
+static inline size_t vector_batches(size_t nelems)
 {
-    return (size & ~(VECTOR_ALIGN-1));
+    return nelems - (nelems % VECTOR_BATCH);
 }
 
 static inline void vector_load(vector_t *dst, scalar_t *src)

@@ -53,10 +53,10 @@ static float dot_f32_q8_0(const float *x, const block_q8_0 *y, size_t n)
 		vector_t vscale;
 		vector_set(&vscale, f16_to_f32(y[i].d));
 
-		for (int g = 0; g < GGML_QK / VECTOR_BATCH; g++) {
+		for_each_vec(g, GGML_QK) {
 			vector_t q, xv, sq;
-			vector_i8_to_f32(&q, &y[i].qs[g * VECTOR_BATCH]);
-			vector_load(&xv, (scalar_t *)&x[i * GGML_QK + g * VECTOR_BATCH]);
+			vector_i8_to_f32(&q, &y[i].qs[g]);
+			vector_load(&xv, (scalar_t *)&x[i * GGML_QK + g]);
 			vector_mul(&sq, &vscale, &q);
 			vector_fma(&acc, &sq, &xv, &acc);
 		}
@@ -76,14 +76,14 @@ static float dot_f32_q4_0(const float *x, const block_q4_0 *y, size_t n)
 		vector_t vscale;
 		vector_set(&vscale, f16_to_f32(y[i].d));
 
-		for (int g = 0; g < GGML_QK / 2 / VECTOR_BATCH; g++) {
+		for_each_vec(g, GGML_QK / 2) {
 			vector_t lo, hi, xv_lo, xv_hi, sq;
 
-			vector_u4_lo_to_f32(&lo, &y[i].qs[g * VECTOR_BATCH]);
-			vector_u4_hi_to_f32(&hi, &y[i].qs[g * VECTOR_BATCH]);
+			vector_u4_lo_to_f32(&lo, &y[i].qs[g]);
+			vector_u4_hi_to_f32(&hi, &y[i].qs[g]);
 
-			vector_load(&xv_lo, (scalar_t *)&x[i * GGML_QK + g * VECTOR_BATCH]);
-			vector_load(&xv_hi, (scalar_t *)&x[i * GGML_QK + g * VECTOR_BATCH + GGML_QK / 2]);
+			vector_load(&xv_lo, (scalar_t *)&x[i * GGML_QK + g]);
+			vector_load(&xv_hi, (scalar_t *)&x[i * GGML_QK + g + GGML_QK / 2]);
 
 			vector_mul(&sq, &vscale, &lo);
 			vector_fma(&acc, &sq, &xv_lo, &acc);
@@ -105,11 +105,11 @@ static void dequant_row_q8_0(const block_q8_0 *src, float *dst, size_t n)
 		vector_t vscale;
 		vector_set(&vscale, f16_to_f32(src[i].d));
 
-		for (int g = 0; g < GGML_QK / VECTOR_BATCH; g++) {
+		for_each_vec(g, GGML_QK) {
 			vector_t q, result;
-			vector_i8_to_f32(&q, &src[i].qs[g * VECTOR_BATCH]);
+			vector_i8_to_f32(&q, &src[i].qs[g]);
 			vector_mul(&result, &vscale, &q);
-			vector_store(&dst[i * GGML_QK + g * VECTOR_BATCH], &result);
+			vector_store(&dst[i * GGML_QK + g], &result);
 		}
 	}
 }
@@ -123,16 +123,16 @@ static void dequant_row_q4_0(const block_q4_0 *src, float *dst, size_t n)
 		vector_t vscale;
 		vector_set(&vscale, f16_to_f32(src[i].d));
 
-		for (int g = 0; g < GGML_QK / 2 / VECTOR_BATCH; g++) {
+		for_each_vec(g, GGML_QK / 2) {
 			vector_t lo, hi, result;
-			vector_u4_lo_to_f32(&lo, &src[i].qs[g * VECTOR_BATCH]);
-			vector_u4_hi_to_f32(&hi, &src[i].qs[g * VECTOR_BATCH]);
+			vector_u4_lo_to_f32(&lo, &src[i].qs[g]);
+			vector_u4_hi_to_f32(&hi, &src[i].qs[g]);
 
 			vector_mul(&result, &vscale, &lo);
-			vector_store(&dst[i * GGML_QK + g * VECTOR_BATCH], &result);
+			vector_store(&dst[i * GGML_QK + g], &result);
 
 			vector_mul(&result, &vscale, &hi);
-			vector_store(&dst[i * GGML_QK + g * VECTOR_BATCH + GGML_QK / 2], &result);
+			vector_store(&dst[i * GGML_QK + g + GGML_QK / 2], &result);
 		}
 	}
 }
@@ -168,20 +168,20 @@ static float dot_f32_q4_K(const float *x, const block_q4_K *y, size_t n)
 			vector_set(&vmin2, dmin_m2);
 
 			/* low nibble: 32 elements with scale d*sc1, min dmin*m1 */
-			for (int g = 0; g < 32 / VECTOR_BATCH; g++) {
+			for_each_vec(g, 32) {
 				vector_t lo, xv, sq;
-				vector_u4_lo_to_f32_unsigned(&lo, &q[j * 32 + g * VECTOR_BATCH]);
-				vector_load(&xv, (scalar_t *)&x[x_off + j * 64 + g * VECTOR_BATCH]);
+				vector_u4_lo_to_f32_unsigned(&lo, &q[j * 32 + g]);
+				vector_load(&xv, (scalar_t *)&x[x_off + j * 64 + g]);
 				vector_mul(&sq, &vscale1, &lo);
 				vector_sub(&sq, &sq, &vmin1);
 				vector_fma(&acc, &sq, &xv, &acc);
 			}
 
 			/* high nibble: 32 elements with scale d*sc2, min dmin*m2 */
-			for (int g = 0; g < 32 / VECTOR_BATCH; g++) {
+			for_each_vec(g, 32) {
 				vector_t hi, xv, sq;
-				vector_u4_hi_to_f32_unsigned(&hi, &q[j * 32 + g * VECTOR_BATCH]);
-				vector_load(&xv, (scalar_t *)&x[x_off + j * 64 + 32 + g * VECTOR_BATCH]);
+				vector_u4_hi_to_f32_unsigned(&hi, &q[j * 32 + g]);
+				vector_load(&xv, (scalar_t *)&x[x_off + j * 64 + 32 + g]);
 				vector_mul(&sq, &vscale2, &hi);
 				vector_sub(&sq, &sq, &vmin2);
 				vector_fma(&acc, &sq, &xv, &acc);
@@ -296,20 +296,20 @@ static void dequant_row_q4_K(const block_q4_K *src, float *dst, size_t n)
 			vector_set(&vscale2, d_sc2);
 			vector_set(&vmin2, dmin_m2);
 
-			for (int g = 0; g < 32 / VECTOR_BATCH; g++) {
+			for_each_vec(g, 32) {
 				vector_t lo, result;
-				vector_u4_lo_to_f32_unsigned(&lo, &q[j * 32 + g * VECTOR_BATCH]);
+				vector_u4_lo_to_f32_unsigned(&lo, &q[j * 32 + g]);
 				vector_mul(&result, &vscale1, &lo);
 				vector_sub(&result, &result, &vmin1);
-				vector_store(&dst[i * QK_K + j * 64 + g * VECTOR_BATCH], &result);
+				vector_store(&dst[i * QK_K + j * 64 + g], &result);
 			}
 
-			for (int g = 0; g < 32 / VECTOR_BATCH; g++) {
+			for_each_vec(g, 32) {
 				vector_t hi, result;
-				vector_u4_hi_to_f32_unsigned(&hi, &q[j * 32 + g * VECTOR_BATCH]);
+				vector_u4_hi_to_f32_unsigned(&hi, &q[j * 32 + g]);
 				vector_mul(&result, &vscale2, &hi);
 				vector_sub(&result, &result, &vmin2);
-				vector_store(&dst[i * QK_K + j * 64 + 32 + g * VECTOR_BATCH], &result);
+				vector_store(&dst[i * QK_K + j * 64 + 32 + g], &result);
 			}
 		}
 	}

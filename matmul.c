@@ -53,9 +53,7 @@ static void nontrans_thread_fn(void *arg, int tidx, int nthreads)
 	if (i_end > m) i_end = m;
 	if (i_start >= m) return;
 
-	size_t j0;
-
-	for (j0 = 0; j0 + VECTOR_BATCH <= n; j0 += VECTOR_BATCH) {
+	for_each_vec(j0, n) {
 		for (size_t i = i_start; i < i_end; i++) {
 			vector_t acc;
 			vector_load(&acc, &result[i * n + j0]);
@@ -70,7 +68,7 @@ static void nontrans_thread_fn(void *arg, int tidx, int nthreads)
 		}
 	}
 
-	for (size_t j = j0; j < n; j++) {
+	for (size_t j = vector_batches(n); j < n; j++) {
 		for (size_t i = i_start; i < i_end; i++) {
 			scalar_t sum = result[i * n + j];
 			for (size_t kk = 0; kk < k; kk++)
@@ -125,9 +123,7 @@ static void transposed_thread_fn(void *arg, int tidx, int nthreads)
 				for (size_t j = 0; j < nr; j++)
 					vector_set(&acc[r * MMA_NR + j], 0);
 
-			for (size_t kk = 0;
-			     kk < vector_batches(k);
-			     kk += VECTOR_BATCH) {
+			for_each_vec(kk, k) {
 				for (size_t r = 0; r < mr; r++) {
 					vector_t av;
 					vector_load(&av,
