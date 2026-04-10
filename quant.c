@@ -241,32 +241,122 @@ static float dot_f32_q6_K(const float *x, const block_q6_K *y, size_t n)
 {
 	assert(n % QK_K == 0);
 	size_t nb = n / QK_K;
-	float sum = 0.0f;
+	vector_t acc;
+	vector_set(&acc, 0);
 
 	for (size_t i = 0; i < nb; i++) {
 		float d = f16_to_f32(y[i].d);
 		size_t x_off = i * QK_K;
 
+		/* Q6_K: 256 values in 2 chunks of 128.
+		 * Each chunk: ql[64] has low 4 bits, qh[32] has high 2 bits.
+		 * 4 groups of 32 values per chunk, each 16 sharing a scale.
+		 * q = (ql_4bit | (qh_2bit << 4)) - 32 */
+
 		for (int chunk = 0; chunk < 2; chunk++) {
 			const uint8_t *ql = y[i].ql + chunk * 64;
 			const uint8_t *qh = y[i].qh + chunk * 32;
-			int n_128 = chunk * 128;
+			int base = chunk * 128;
 
-			for (int l = 0; l < 32; l++) {
-				int is = n_128 / 16 + l / 16;
-				int q1 = (int)((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
-				int q2 = (int)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
-				int q3 = (int)((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
-				int q4 = (int)((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
-				sum += d * y[i].scales[is + 0] * q1 * x[x_off + n_128 + l + 0];
-				sum += d * y[i].scales[is + 2] * q2 * x[x_off + n_128 + l + 32];
-				sum += d * y[i].scales[is + 4] * q3 * x[x_off + n_128 + l + 64];
-				sum += d * y[i].scales[is + 6] * q4 * x[x_off + n_128 + l + 96];
+			/* Dequant 32 values at a time into a temp buffer,
+			 * then do the vectorized dot product */
+			float tmp[32] __attribute__((aligned(64)));
+
+			/* Group 0: ql[0..31] low nibble, qh bits 0-1 */
+			for (int l = 0; l < 32; l++)
+				tmp[l] = (float)(((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
+			{
+				vector_t vs;
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 0]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 1]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[16 + g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 16 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+			}
+
+			/* Group 1: ql[32..63] low nibble, qh bits 2-3 */
+			for (int l = 0; l < 32; l++)
+				tmp[l] = (float)(((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
+			{
+				vector_t vs;
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 2]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 32 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 3]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[16 + g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 32 + 16 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+			}
+
+			/* Group 2: ql[0..31] high nibble, qh bits 4-5 */
+			for (int l = 0; l < 32; l++)
+				tmp[l] = (float)(((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32);
+			{
+				vector_t vs;
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 4]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 64 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 5]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[16 + g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 64 + 16 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+			}
+
+			/* Group 3: ql[32..63] high nibble, qh bits 6-7 */
+			for (int l = 0; l < 32; l++)
+				tmp[l] = (float)(((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32);
+			{
+				vector_t vs;
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 6]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 96 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
+				vector_set(&vs, d * y[i].scales[chunk * 8 + 7]);
+				for_each_vec(g, 16) {
+					vector_t vt, vx;
+					vector_load(&vt, &tmp[16 + g]);
+					vector_load(&vx, (scalar_t *)&x[x_off + base + 96 + 16 + g]);
+					vector_mul(&vt, &vt, &vs);
+					vector_fma(&acc, &vt, &vx, &acc);
+				}
 			}
 		}
 	}
 
-	return sum;
+	return vector_reduce_sum(&acc);
 }
 
 static void dequant_row_q4_K(const block_q4_K *src, float *dst, size_t n)

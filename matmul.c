@@ -78,6 +78,24 @@ static void nontrans_thread_fn(void *arg, int tidx, int nthreads)
 	}
 }
 
+/* GEMV fast path: result[n] = lhs[k] . rhs[n,k].T using direct quant dots */
+static void transposed_gemv_thread_fn(void *arg, int tidx, int nthreads)
+{
+	struct matmul_work *w = arg;
+	size_t k = w->k, n = w->n;
+	const scalar_t *lhs = w->lhs;
+	scalar_t *result = w->result;
+
+	size_t chunk = (n + nthreads - 1) / nthreads;
+	size_t j_start = tidx * chunk;
+	size_t j_end = j_start + chunk;
+	if (j_end > n) j_end = n;
+
+	for (size_t j = j_start; j < j_end; j++)
+		result[j] += dot_f32_quant(lhs, w->rhs->qdata,
+					   w->rhs->type, j, k);
+}
+
 /* result[m,n] = lhs[m,k] @ rhs[n,k].T parallelized along n */
 static void transposed_thread_fn(void *arg, int tidx, int nthreads)
 {
@@ -200,7 +218,12 @@ void tensor_mma_transposed_2x2_tp(
 		.result = ret->data, .lhs = lhs->data, .rhs = rhs,
 		.m = m, .k = k, .n = n,
 	};
-	thread_pool_run(transposed_thread_fn, &w, m, k, n);
+
+	/* GEMV fast path: direct quantized dot, no dequant scratch buffer */
+	if (m == 1 && rhs->type != TENSOR_F32)
+		thread_pool_run(transposed_gemv_thread_fn, &w, m, k, n);
+	else
+		thread_pool_run(transposed_thread_fn, &w, m, k, n);
 }
 
 #ifdef USE_CBLAS
