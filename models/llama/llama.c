@@ -364,8 +364,13 @@ static void dense_ffn(struct llama *model, tensor_t *input, tensor_t *output, si
 	tensor_resize(gate, T);
 	tensor_resize(up, T);
 
-	tensor_mma_transposed_2x2(gate, input, hl->gate_exp[0], NULL);
-	tensor_mma_transposed_2x2(up, input, hl->up_exp[0], NULL);
+	if (!fused_gemv2(input,
+			       gate, hl->gate_exp[0],
+			       up, hl->up_exp[0])) {
+		tensor_mma_transposed_2x2(gate, input, hl->gate_exp[0], NULL);
+		tensor_mma_transposed_2x2(up, input, hl->up_exp[0], NULL);
+	}
+
 	silu(gate);
 	tensor_mul(gate, gate, up);
 	tensor_mma_transposed_2x2(output, gate, hl->down_exp[0], NULL);
@@ -474,9 +479,14 @@ static void llama_forward(struct llama *model, int *tok, int *pos, size_t T,
 
 		/* Separate Q/K/V projections */
 		tensor_copy(output, q);
-		tensor_mma_transposed_2x2(q, output, hl->q_weight, NULL);
-		tensor_mma_transposed_2x2(k, output, hl->k_weight, NULL);
-		tensor_mma_transposed_2x2(v, output, hl->v_weight, NULL);
+		if (!fused_gemv3(output,
+				       q, hl->q_weight,
+				       k, hl->k_weight,
+				       v, hl->v_weight)) {
+			tensor_mma_transposed_2x2(q, output, hl->q_weight, NULL);
+			tensor_mma_transposed_2x2(k, output, hl->k_weight, NULL);
+			tensor_mma_transposed_2x2(v, output, hl->v_weight, NULL);
+		}
 		tensor_assert_2d(q, T, QH * HLEN);
 		tensor_assert_2d(k, T, KVH * HLEN);
 		tensor_assert_2d(v, T, KVH * HLEN);

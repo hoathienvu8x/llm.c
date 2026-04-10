@@ -29,3 +29,4 @@ void tensor_mma_2x2(tensor_t *ret, const tensor_t *lhs,
 		     const tensor_t *rhs, const tensor_t *add);
 void tensor_mma_transposed_2x2(tensor_t *ret, const tensor_t *lhs,
 				const tensor_t *rhs, const tensor_t *add);
+

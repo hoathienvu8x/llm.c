@@ -1,5 +1,7 @@
 #include "nn.h"
 #include "simd.h"
+#include "quant.h"
+#include "thread_pool.h"
 
 #include <math.h>
 
@@ -305,31 +307,107 @@ void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 	}
 }
 
-/*
- * Flash Attention (https://github.com/dao-ailab/flash-attention)
- *
- * Standard attention materializes the full [T, AT] score matrix:
- *   S = Q @ K^T / sqrt(d)
- *   S = mask(S)
- *   P = softmax(S)          ← [T, AT], the bottleneck
- *   O = P @ V
- *
- * Flash attention avoids this by processing K/V in blocks and
- * computing softmax incrementally ("online softmax"):
- *
- *   for each K_block, V_block of size [Bk, D]:
- *       S = Q @ K_block^T / sqrt(d)        # small [T, Bk] tile
- *       S = mask(S)
- *       m_new = max(m, rowmax(S))          # update running max
- *       correction = exp(m_old - m_new)    # rescale previous results
- *       P = exp(S - m_new)                 # local softmax numerators
- *       O = O * correction + P @ V_block   # accumulate weighted values
- *       l = l * correction + rowsum(P)     # accumulate denominator
- *   O = O / l                              # final normalize
- *
- * Memory: O(T * Bk) instead of O(T * AT). For a 4K context with
- * Bk=64, this is 256KB instead of 64MB per head.
- */
+/* Fused multi-GEMV */
+
+#ifndef FUSED_GEMV
+#define FUSED_GEMV 1
+#endif
+
+#define FUSED_MAX_SEGS 4
+
+struct fused_seg {
+	scalar_t *out;
+	const tensor_t *weight;
+	size_t n;
+	size_t offset;
+};
+
+struct fused_gemv_work {
+	const scalar_t *input;
+	size_t k;
+	size_t total_n;
+	int nsegs;
+	struct fused_seg segs[FUSED_MAX_SEGS];
+};
+
+static void fused_gemv_fn(void *arg, int tidx, int nthreads)
+{
+	struct fused_gemv_work *w = arg;
+	size_t chunk = (w->total_n + nthreads - 1) / nthreads;
+	size_t j_start = tidx * chunk;
+	size_t j_end = j_start + chunk;
+	if (j_end > w->total_n)
+		j_end = w->total_n;
+
+	for (size_t j = j_start; j < j_end; j++) {
+		for (int s = 0; s < w->nsegs; s++) {
+			if (j < w->segs[s].offset + w->segs[s].n) {
+				size_t local = j - w->segs[s].offset;
+				w->segs[s].out[local] = dot_f32_quant(
+					w->input, w->segs[s].weight->qdata,
+					w->segs[s].weight->type, local, w->k);
+				break;
+			}
+		}
+	}
+}
+
+static int fused_gemv_run(const tensor_t *in, struct fused_seg *segs, int nsegs)
+{
+	if (!FUSED_GEMV || in->dim[0] != 1)
+		return 0;
+
+	for (int i = 0; i < nsegs; i++)
+		if (segs[i].weight->type == TENSOR_F32 ||
+		    segs[i].weight->dim[1] != in->dim[1])
+			return 0;
+
+	struct fused_gemv_work w = {
+		.input = in->data,
+		.k = in->dim[1],
+		.nsegs = nsegs,
+	};
+
+	size_t total = 0;
+	for (int i = 0; i < nsegs; i++) {
+		w.segs[i] = segs[i];
+		w.segs[i].offset = total;
+		total += segs[i].n;
+	}
+	w.total_n = total;
+
+	thread_pool_run(fused_gemv_fn, &w, 1, w.k, total);
+	return 1;
+}
+
+int fused_gemv2(
+	const tensor_t *in,
+	tensor_t *out1, const tensor_t *w1,
+	tensor_t *out2, const tensor_t *w2)
+{
+	struct fused_seg segs[] = {
+		{ out1->data, w1, w1->dim[0] },
+		{ out2->data, w2, w2->dim[0] },
+	};
+	return fused_gemv_run(in, segs, 2);
+}
+
+int fused_gemv3(
+	const tensor_t *in,
+	tensor_t *out1, const tensor_t *w1,
+	tensor_t *out2, const tensor_t *w2,
+	tensor_t *out3, const tensor_t *w3)
+{
+	struct fused_seg segs[] = {
+		{ out1->data, w1, w1->dim[0] },
+		{ out2->data, w2, w2->dim[0] },
+		{ out3->data, w3, w3->dim[0] },
+	};
+	return fused_gemv_run(in, segs, 3);
+}
+
+/* Flash Attention */
+
 #define FA_BLOCK 64
 
 void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
