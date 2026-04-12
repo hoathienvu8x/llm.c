@@ -299,7 +299,8 @@ struct gguf *gguf_load(const char *path)
 		return NULL;
 	}
 
-	data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+	data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
 	close(fd);
 	if (data == MAP_FAILED) {
 		fprintf(stderr, "gguf: mmap('%s'): %s\n", path, strerror(errno));
