@@ -163,13 +163,7 @@ static int pick_nthreads(size_t m, size_t k, size_t n)
 	if (flops < MIN_FLOPS_THREADED)
 		return 1;
 
-	int by_flops = flops / MIN_FLOPS_PER_THREAD;
-	int nt = by_flops < (int)n ? by_flops : n;
-	if (nt > g_tp.nthreads)
-		nt = g_tp.nthreads;
-	if (nt < 1)
-		nt = 1;
-	return nt;
+	return g_tp.nthreads;
 }
 
 void thread_pool_run(tp_work_fn fn, void *arg,
