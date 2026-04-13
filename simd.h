@@ -18,6 +18,24 @@ typedef float scalar_t;
 typedef avx512_vector_t vector_t;
 #define VECTOR_BATCH AVX512_BATCH
 
+#define vector_load                    avx512_vector_load
+#define vector_set                     avx512_vector_set
+#define vector_store                   avx512_vector_store
+#define vector_add                     avx512_vector_add
+#define vector_sub                     avx512_vector_sub
+#define vector_mul                     avx512_vector_mul
+#define vector_div                     avx512_vector_div
+#define vector_exp                     avx512_vector_exp
+#define vector_tanh                    avx512_vector_tanh
+#define vector_i8_to_f32               avx512_vector_i8_to_f32
+#define vector_u4_lo_to_f32            avx512_vector_u4_lo_to_f32
+#define vector_u4_hi_to_f32            avx512_vector_u4_hi_to_f32
+#define vector_u4_lo_to_f32_unsigned   avx512_vector_u4_lo_to_f32_unsigned
+#define vector_u4_hi_to_f32_unsigned   avx512_vector_u4_hi_to_f32_unsigned
+#define vector_fma                     avx512_vector_fma
+#define vector_reduce_sum              avx512_vector_reduce_sum
+#define vector_reduce_max              avx512_vector_reduce_max
+
 #elif defined(__AVX2__)
 
 /* https://github.com/flame/blis/blob/master/kernels/haswell/3/bli_gemmtrsm_l_haswell_asm_d6x8.c */
@@ -27,6 +45,24 @@ typedef avx512_vector_t vector_t;
 typedef avx2_vector_t vector_t;
 #define VECTOR_BATCH AVX2_BATCH
 
+#define vector_load                    avx2_vector_load
+#define vector_set                     avx2_vector_set
+#define vector_store                   avx2_vector_store
+#define vector_add                     avx2_vector_add
+#define vector_sub                     avx2_vector_sub
+#define vector_mul                     avx2_vector_mul
+#define vector_div                     avx2_vector_div
+#define vector_exp                     avx2_vector_exp
+#define vector_tanh                    avx2_vector_tanh
+#define vector_i8_to_f32               avx2_vector_i8_to_f32
+#define vector_u4_lo_to_f32            avx2_vector_u4_lo_to_f32
+#define vector_u4_hi_to_f32            avx2_vector_u4_hi_to_f32
+#define vector_u4_lo_to_f32_unsigned   avx2_vector_u4_lo_to_f32_unsigned
+#define vector_u4_hi_to_f32_unsigned   avx2_vector_u4_hi_to_f32_unsigned
+#define vector_fma                     avx2_vector_fma
+#define vector_reduce_sum              avx2_vector_reduce_sum
+#define vector_reduce_max              avx2_vector_reduce_max
+
 #else
 
 /* https://github.com/flame/blis/blob/master/kernels/sandybridge/3/bli_gemm_sandybridge_asm_d8x4.c */
@@ -35,6 +71,25 @@ typedef avx2_vector_t vector_t;
 
 typedef cpu_vector_t vector_t;
 #define VECTOR_BATCH CPU_BATCH
+
+#define vector_load                    cpu_vector_load
+#define vector_set                     cpu_vector_set
+#define vector_store                   cpu_vector_store
+#define vector_add                     cpu_vector_add
+#define vector_sub                     cpu_vector_sub
+#define vector_mul                     cpu_vector_mul
+#define vector_div                     cpu_vector_div
+#define vector_exp                     cpu_vector_exp
+#define vector_tanh                    cpu_vector_tanh
+#define vector_i8_to_f32               cpu_vector_i8_to_f32
+#define vector_u4_lo_to_f32            cpu_vector_u4_lo_to_f32
+#define vector_u4_hi_to_f32            cpu_vector_u4_hi_to_f32
+#define vector_u4_lo_to_f32_unsigned   cpu_vector_u4_lo_to_f32_unsigned
+#define vector_u4_hi_to_f32_unsigned   cpu_vector_u4_hi_to_f32_unsigned
+#define vector_fma                     cpu_vector_fma
+#define vector_reduce_sum              cpu_vector_reduce_sum
+#define vector_reduce_max              cpu_vector_reduce_max
+
 #endif
 
 #define VECTOR_ALIGN (sizeof(scalar_t) * VECTOR_BATCH)
@@ -45,191 +100,4 @@ typedef cpu_vector_t vector_t;
 static inline size_t vector_batches(size_t nelems)
 {
     return nelems - (nelems % VECTOR_BATCH);
-}
-
-static inline void vector_load(vector_t *dst, scalar_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_load(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_load(dst, src);
-#else
-    cpu_vector_load(dst, src);
-#endif
-}
-
-static inline void vector_set(vector_t *dst, scalar_t val)
-{
-#if defined(__AVX512F__)
-    avx512_vector_set(dst, val);
-#elif defined(__AVX2__)
-    avx2_vector_set(dst, val);
-#else
-    cpu_vector_set(dst, val);
-#endif
-}
-
-static inline void vector_store(scalar_t *dst, vector_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_store(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_store(dst, src);
-#else
-    cpu_vector_store(dst, src);
-#endif
-}
-
-static inline void vector_add(vector_t *dst, vector_t *lhs, vector_t *rhs)
-{
-#if defined(__AVX512F__)
-    avx512_vector_add(dst, lhs, rhs);
-#elif defined(__AVX2__)
-    avx2_vector_add(dst, lhs, rhs);
-#else
-    cpu_vector_add(dst, lhs, rhs);
-#endif
-}
-
-static inline void vector_sub(vector_t *dst, vector_t *lhs, vector_t *rhs)
-{
-#if defined(__AVX512F__)
-    avx512_vector_sub(dst, lhs, rhs);
-#elif defined(__AVX2__)
-    avx2_vector_sub(dst, lhs, rhs);
-#else
-    cpu_vector_sub(dst, lhs, rhs);
-#endif
-}
-
-static inline void vector_mul(vector_t *dst, vector_t *lhs, vector_t *rhs)
-{
-#if defined(__AVX512F__)
-    avx512_vector_mul(dst, lhs, rhs);
-#elif defined(__AVX2__)
-    avx2_vector_mul(dst, lhs, rhs);
-#else
-    cpu_vector_mul(dst, lhs, rhs);
-#endif
-}
-
-static inline void vector_div(vector_t *dst, vector_t *lhs, vector_t *rhs)
-{
-#if defined(__AVX512F__)
-    avx512_vector_div(dst, lhs, rhs);
-#elif defined(__AVX2__)
-    avx2_vector_div(dst, lhs, rhs);
-#else
-    cpu_vector_div(dst, lhs, rhs);
-#endif
-}
-
-static inline void vector_exp(vector_t *dst, vector_t *lhs)
-{
-#if defined(__AVX512F__)
-    avx512_vector_exp(dst, lhs);
-#elif defined(__AVX2__)
-    avx2_vector_exp(dst, lhs);
-#else
-    cpu_vector_exp(dst, lhs);
-#endif
-}
-
-static inline void vector_tanh(vector_t *dst, vector_t *lhs)
-{
-#if defined(__AVX512F__)
-    avx512_vector_tanh(dst, lhs);
-#elif defined(__AVX2__)
-    avx2_vector_tanh(dst, lhs);
-#else
-    cpu_vector_tanh(dst, lhs);
-#endif
-}
-
-static inline void vector_i8_to_f32(vector_t *dst, const int8_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_i8_to_f32(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_i8_to_f32(dst, src);
-#else
-    cpu_vector_i8_to_f32(dst, src);
-#endif
-}
-
-static inline void vector_u4_lo_to_f32(vector_t *dst, const uint8_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_u4_lo_to_f32(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_u4_lo_to_f32(dst, src);
-#else
-    cpu_vector_u4_lo_to_f32(dst, src);
-#endif
-}
-
-static inline void vector_u4_hi_to_f32(vector_t *dst, const uint8_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_u4_hi_to_f32(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_u4_hi_to_f32(dst, src);
-#else
-    cpu_vector_u4_hi_to_f32(dst, src);
-#endif
-}
-
-static inline void vector_u4_lo_to_f32_unsigned(vector_t *dst, const uint8_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_u4_lo_to_f32_unsigned(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_u4_lo_to_f32_unsigned(dst, src);
-#else
-    cpu_vector_u4_lo_to_f32_unsigned(dst, src);
-#endif
-}
-
-static inline void vector_u4_hi_to_f32_unsigned(vector_t *dst, const uint8_t *src)
-{
-#if defined(__AVX512F__)
-    avx512_vector_u4_hi_to_f32_unsigned(dst, src);
-#elif defined(__AVX2__)
-    avx2_vector_u4_hi_to_f32_unsigned(dst, src);
-#else
-    cpu_vector_u4_hi_to_f32_unsigned(dst, src);
-#endif
-}
-
-static inline void vector_fma(vector_t *dst, vector_t *a, vector_t *b, vector_t *c)
-{
-#if defined(__AVX512F__)
-    avx512_vector_fma(dst, a, b, c);
-#elif defined(__AVX2__)
-    avx2_vector_fma(dst, a, b, c);
-#else
-    cpu_vector_fma(dst, a, b, c);
-#endif
-}
-
-static inline scalar_t vector_reduce_sum(vector_t *lhs)
-{
-#if defined(__AVX512F__)
-    return avx512_vector_reduce_sum(lhs);
-#elif defined(__AVX2__)
-    return avx2_vector_reduce_sum(lhs);
-#else
-    return cpu_vector_reduce_sum(lhs);
-#endif
-}
-
-static inline scalar_t vector_reduce_max(vector_t *lhs)
-{
-#if defined(__AVX512F__)
-    return avx512_vector_reduce_max(lhs);
-#elif defined(__AVX2__)
-    return avx2_vector_reduce_max(lhs);
-#else
-    return cpu_vector_reduce_max(lhs);
-#endif
 }

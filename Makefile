@@ -26,7 +26,9 @@ MODEL_CFLAGS=$(addprefix -I,$(MODEL_DIRS))
 MODEL_SRCS=$(wildcard models/*/*.c)
 TOOL_SRCS=$(wildcard tools/*.c)
 
-CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. $(MODEL_CFLAGS) -O$(O) -march=native -rdynamic -DFLASH_ATTENTION
+FEATURES=-DFLASH_ATTENTION -DFUSED_GEMV -DQ8_DOT
+
+CFLAGS=$(SLEEF_CFLAGS) $(BLAS_CFLAGS) -I. $(MODEL_CFLAGS) -O$(O) -march=native -rdynamic $(FEATURES)
 LDFLAGS=$(SLEEF_LDFLAGS) $(BLAS_LDFLAGS)
 CC=clang
 
@@ -62,6 +64,7 @@ check: build
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/rope.c $(COMMON_SRCS) nn.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/gguf.c gguf.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out gpt2_$(M).gguf
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/quant.c $(COMMON_SRCS) $(LIBS) && ./a.out
+	$(CC) $(LDFLAGS) $(CFLAGS) -g test/quant_dot.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/matmul.c $(COMMON_SRCS) $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/prompt.c gguf.c prompt.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out mixtral-8x7b-Q4_K_M.gguf mistral-7b-instruct-v0.3-Q4_K_M.gguf olmoe-1b-7b-q4_k_m.gguf gpt2_$(M).gguf llama-3.2-3b-instruct-Q4_K_M.gguf
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/vocab.c gguf.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out llama-3.2-3b-instruct-Q4_K_M.gguf test/expected_vocab_llama3.txt && ./a.out mistral-7b-instruct-v0.3-Q4_K_M.gguf test/expected_vocab_mistral.txt

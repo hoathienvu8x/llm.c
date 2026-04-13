@@ -146,8 +146,26 @@ tensor_t *tensor_new_3d(size_t d1, size_t d2, size_t d3, ...)
 
 void tensor_free(tensor_t *t)
 {
+#ifdef Q8_DOT
+	free(t->scratch);
+#endif
 	free(t->data);
 	free(t);
+}
+
+void *tensor_scratch(const tensor_t *t, size_t size)
+{
+#ifdef Q8_DOT
+	tensor_t *mt = (tensor_t *)t;
+	if (size && mt->scratch_size < size) {
+		free(mt->scratch);
+		mt->scratch = aligned_alloc(64, size);
+		mt->scratch_size = size;
+	}
+	return mt->scratch;
+#else
+	return NULL;
+#endif
 }
 
 tensor_t *tensor_new_mapped(void *data, size_t totlen, enum tensor_dtype type)

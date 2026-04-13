@@ -24,6 +24,10 @@ typedef struct {
 	uint64_t maxcap;
 	uint64_t dim[4];
 	uint32_t ndim;
+#ifdef Q8_DOT
+	void *scratch;
+	size_t scratch_size;
+#endif
 } tensor_t;
 
 tensor_t *tensor_new_zero(size_t ndim, ...);
@@ -32,6 +36,7 @@ tensor_t *tensor_new_1d(size_t d1, ...);
 tensor_t *tensor_new_2d(size_t d1, size_t d2, ...);
 tensor_t *tensor_new_3d(size_t d1, size_t d2, size_t d3, ...);
 void tensor_free(tensor_t *t);
+void *tensor_scratch(const tensor_t *t, size_t size);
 
 tensor_t *tensor_new_mapped(void *data, size_t totlen, enum tensor_dtype type);
 void tensor_free_mapped(const tensor_t *t);
@@ -126,21 +131,24 @@ static inline void tensor_resize_2d(tensor_t *t, size_t d1, size_t d2)
 	t->totlen = d1 * d2;
 }
 
-/* returns a ft view over original ft */
-#define tensor_at(t, idx, view) \
-do { \
-	assert((t)->ndim > 1); \
-	assert((idx) < (t)->dim[0]); \
-	/* f & view can alias */ \
-	(view)->totlen = (t)->totlen / (t)->dim[0]; \
-	(view)->maxcap = (t)->totlen; \
-	(view)->data = &(t)->data[(view)->totlen * (idx)]; \
-	(view)->type = (t)->type; \
-	(view)->ndim = (t)->ndim - 1; \
-	(view)->dim[0] = (t)->dim[1]; \
-	(view)->dim[1] = (t)->dim[2]; \
-	(view)->dim[2] = (t)->dim[3]; \
-} while (0)
+/* returns a view over original tensor */
+static inline void tensor_at(const tensor_t *t, size_t idx, tensor_t *view)
+{
+	assert(t->ndim > 1);
+	assert(idx < t->dim[0]);
+	view->totlen = t->totlen / t->dim[0];
+	view->maxcap = t->totlen;
+	view->data = &t->data[view->totlen * idx];
+	view->type = t->type;
+	view->ndim = t->ndim - 1;
+	view->dim[0] = t->dim[1];
+	view->dim[1] = t->dim[2];
+	view->dim[2] = t->dim[3];
+#ifdef Q8_DOT
+	view->scratch = NULL;
+	view->scratch_size = 0;
+#endif
+}
 
 static inline void tensor_assert_1d(const tensor_t *t, size_t d1)
 {

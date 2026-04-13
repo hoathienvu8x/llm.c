@@ -77,5 +77,18 @@ static inline float f16_to_f32(uint16_t h)
 float f16_to_f32(uint16_t h);
 #endif
 
+/* Q8_K: temporary quantization of activations for integer dot products */
+typedef struct {
+	float d;
+	int8_t qs[QK_K];
+	int16_t bsums[QK_K / 16];
+} block_q8_K;
+
 void dequant_row(const void *qdata, int type, size_t row, float *dst, size_t n);
 float dot_f32_quant(const float *x, const void *qdata, int type, size_t row, size_t n);
+
+#ifdef Q8_DOT
+void quantize_row_q8(const float *x, block_q8_K *y, size_t n);
+float dot_q8_quant(const block_q8_K *q8, const float *x,
+		   const void *qdata, int type, size_t row, size_t n);
+#endif

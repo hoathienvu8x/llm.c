@@ -307,14 +307,6 @@ void top_k(tensor_t *f, size_t *top_n, scalar_t *top_v, size_t k)
 	}
 }
 
-/* Fused multi-GEMV */
-
-#ifndef FUSED_GEMV
-#define FUSED_GEMV 1
-#endif
-
-#define FUSED_MAX_SEGS 4
-
 struct fused_seg {
 	scalar_t *out;
 	const tensor_t *weight;
@@ -322,8 +314,14 @@ struct fused_seg {
 	size_t offset;
 };
 
+#ifdef FUSED_GEMV
+#define FUSED_MAX_SEGS 4
+
 struct fused_gemv_work {
 	const scalar_t *input;
+#ifdef Q8_DOT
+	const block_q8_K *q8;
+#endif
 	size_t k;
 	size_t total_n;
 	int nsegs;
@@ -343,9 +341,17 @@ static void fused_gemv_fn(void *arg, int tidx, int nthreads)
 		for (int s = 0; s < w->nsegs; s++) {
 			if (j < w->segs[s].offset + w->segs[s].n) {
 				size_t local = j - w->segs[s].offset;
-				w->segs[s].out[local] = dot_f32_quant(
-					w->input, w->segs[s].weight->qdata,
+#ifdef Q8_DOT
+				w->segs[s].out[local] = dot_q8_quant(
+					w->q8, w->input,
+					w->segs[s].weight->qdata,
 					w->segs[s].weight->type, local, w->k);
+#else
+				w->segs[s].out[local] = dot_f32_quant(
+					w->input,
+					w->segs[s].weight->qdata,
+					w->segs[s].weight->type, local, w->k);
+#endif
 				break;
 			}
 		}
@@ -354,7 +360,7 @@ static void fused_gemv_fn(void *arg, int tidx, int nthreads)
 
 static int fused_gemv_run(const tensor_t *in, struct fused_seg *segs, int nsegs)
 {
-	if (!FUSED_GEMV || in->dim[0] != 1)
+	if (in->dim[0] != 1)
 		return 0;
 
 	for (int i = 0; i < nsegs; i++)
@@ -362,11 +368,22 @@ static int fused_gemv_run(const tensor_t *in, struct fused_seg *segs, int nsegs)
 		    segs[i].weight->dim[1] != in->dim[1])
 			return 0;
 
+	size_t k = in->dim[1];
+
 	struct fused_gemv_work w = {
 		.input = in->data,
-		.k = in->dim[1],
+		.k = k,
 		.nsegs = nsegs,
 	};
+
+#ifdef Q8_DOT
+	block_q8_K *q8 = NULL;
+	if (k % QK_K == 0) {
+		q8 = tensor_scratch(in, (k / QK_K) * sizeof(block_q8_K));
+		quantize_row_q8(in->data, q8, k);
+	}
+	w.q8 = q8;
+#endif
 
 	size_t total = 0;
 	for (int i = 0; i < nsegs; i++) {
@@ -376,9 +393,15 @@ static int fused_gemv_run(const tensor_t *in, struct fused_seg *segs, int nsegs)
 	}
 	w.total_n = total;
 
-	thread_pool_run(fused_gemv_fn, &w, 1, w.k, total);
+	thread_pool_run(fused_gemv_fn, &w, 1, k, total);
 	return 1;
 }
+#else
+static int fused_gemv_run(const tensor_t *in, struct fused_seg *segs, int nsegs)
+{
+	return 0;
+}
+#endif
 
 int fused_gemv2(
 	const tensor_t *in,
@@ -406,8 +429,7 @@ int fused_gemv3(
 	return fused_gemv_run(in, segs, 3);
 }
 
-/* Flash Attention */
-
+#ifdef FLASH_ATTENTION
 #define FA_BLOCK 64
 
 void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
@@ -522,3 +544,4 @@ void flash_attention(tensor_t *out, const tensor_t *q, const tensor_t *k,
 		}
 	}
 }
+#endif

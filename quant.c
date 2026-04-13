@@ -1,6 +1,7 @@
 #include "quant.h"
 #include "tensor.h"
 #include "simd.h"
+#include "quant_cpu.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -554,3 +555,58 @@ float dot_f32_quant(const float *x, const void *qdata, int type, size_t row, siz
 		abort();
 	}
 }
+
+#ifdef Q8_DOT
+
+#if defined(__AVX2__)
+#include "quant_avx2.h"
+#define dot_q4_K_q8_K avx2_dot_q4_K_q8_K
+#define dot_q6_K_q8_K avx2_dot_q6_K_q8_K
+#else
+#define dot_q4_K_q8_K cpu_dot_q4_K_q8_K
+#define dot_q6_K_q8_K cpu_dot_q6_K_q8_K
+#endif
+
+void quantize_row_q8(const float *x, block_q8_K *y, size_t n)
+{
+	assert(n % QK_K == 0);
+	for (size_t i = 0; i < n / QK_K; i++) {
+		const float *xb = &x[i * QK_K];
+		float amax = 0, mval = 0;
+		for (int j = 0; j < QK_K; j++) {
+			float a = fabsf(xb[j]);
+			if (a > amax) { amax = a; mval = xb[j]; }
+		}
+		if (amax == 0) {
+			memset(&y[i], 0, sizeof(y[i]));
+			continue;
+		}
+		float iscale = -127.0f / mval;
+		y[i].d = 1.0f / iscale;
+		for (int j = 0; j < QK_K; j++) {
+			int v = (int)roundf(iscale * xb[j]);
+			y[i].qs[j] = v < 127 ? v : 127;
+		}
+		for (int j = 0; j < QK_K / 16; j++) {
+			int s = 0;
+			for (int k = 0; k < 16; k++)
+				s += y[i].qs[j * 16 + k];
+			y[i].bsums[j] = s;
+		}
+	}
+}
+
+float dot_q8_quant(const block_q8_K *q8, const float *x,
+		   const void *qdata, int type, size_t row, size_t n)
+{
+	size_t bpr = n / QK_K;
+	switch (type) {
+	case TENSOR_Q4_K:
+		return dot_q4_K_q8_K((const block_q4_K *)qdata + row * bpr, q8, n);
+	case TENSOR_Q6_K:
+		return dot_q6_K_q8_K((const block_q6_K *)qdata + row * bpr, q8, n);
+	default:
+		return dot_f32_quant(x, qdata, type, row, n);
+	}
+}
+#endif
