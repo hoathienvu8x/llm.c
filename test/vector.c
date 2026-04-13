@@ -1,6 +1,6 @@
 #include <math.h>
 
-#include "simd.h"
+#include "vector.h"
 #include "test/test.h"
 
 static scalar_t *bench_alloc(size_t num, double value)

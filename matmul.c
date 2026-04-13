@@ -1,7 +1,7 @@
 #include "matmul.h"
 #include "thread_pool.h"
 #include "quant.h"
-#include "simd.h"
+#include "vector.h"
 
 #include <stdlib.h>
 #include <string.h>

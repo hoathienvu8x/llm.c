@@ -1,5 +1,5 @@
 #include "nn.h"
-#include "simd.h"
+#include "vector.h"
 #include "quant.h"
 #include "thread_pool.h"
 

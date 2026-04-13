@@ -5,9 +5,9 @@
 
 typedef float scalar_t;
 
-#include "simd_cpu.h"
-#include "simd_avx2.h"
-#include "simd_avx512.h"
+#include "vector_cpu.h"
+#include "vector_avx2.h"
+#include "vector_avx512.h"
 
 #if defined(__AVX512F__)
 

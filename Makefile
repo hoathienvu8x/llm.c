@@ -59,7 +59,7 @@ run: build
 
 check: build
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/tensor.c $(COMMON_SRCS) $(LIBS) && ./a.out
-	$(CC) $(LDFLAGS) $(CFLAGS) -g test/simd.c $(LIBS) && ./a.out
+	$(CC) $(LDFLAGS) $(CFLAGS) -g test/vector.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/nn.c $(COMMON_SRCS) nn.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/rope.c $(COMMON_SRCS) nn.c $(LIBS) && ./a.out
 	$(CC) $(LDFLAGS) $(CFLAGS) -g test/gguf.c gguf.c vocab.c $(COMMON_SRCS) $(LIBS) && ./a.out gpt2_$(M).gguf

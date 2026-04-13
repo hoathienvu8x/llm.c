@@ -5,7 +5,7 @@
 #include <assert.h>
 #include <stdio.h>
 
-#include "simd.h"
+#include "vector.h"
 
 enum tensor_dtype {
 	TENSOR_F32,

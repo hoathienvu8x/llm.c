@@ -4,7 +4,7 @@
 #include "gguf.h"
 #include "vocab.h"
 #include "kvcache.h"
-#include "simd.h"
+#include "vector.h"
 #include "tensor_trace.h"
 #include "json.h"
 

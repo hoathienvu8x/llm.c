@@ -1,6 +1,6 @@
 #include "quant.h"
 #include "tensor.h"
-#include "simd.h"
+#include "vector.h"
 #include "quant_cpu.h"
 
 #include <assert.h>
