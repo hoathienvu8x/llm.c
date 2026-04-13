@@ -43,6 +43,63 @@ float f16_to_f32(uint16_t h)
 }
 #endif
 
+static uint16_t f32_to_f16(float val)
+{
+#if defined(__F16C__)
+	return _cvtss_sh(val, 0);
+#else
+	uint32_t f;
+	memcpy(&f, &val, sizeof(f));
+	uint32_t sign = (f >> 16) & 0x8000;
+	int32_t exp = ((f >> 23) & 0xff) - 127 + 15;
+	uint32_t mant = f & 0x7fffff;
+	if (exp <= 0) return sign;
+	if (exp >= 31) return sign | 0x7c00;
+	return sign | (exp << 10) | (mant >> 13);
+#endif
+}
+
+void quantize_row_q8_0(const float *x, block_q8_0 *y, size_t n)
+{
+	assert(n % GGML_QK == 0);
+	for (size_t i = 0; i < n / GGML_QK; i++) {
+		const float *xb = &x[i * GGML_QK];
+		float amax = 0;
+		for (int j = 0; j < GGML_QK; j++) {
+			float a = fabsf(xb[j]);
+			if (a > amax) amax = a;
+		}
+		float d = amax / 127.0f;
+		float id = d ? 1.0f / d : 0;
+		y[i].d = f32_to_f16(d);
+		for (int j = 0; j < GGML_QK; j++)
+			y[i].qs[j] = (int8_t)roundf(xb[j] * id);
+	}
+}
+
+tensor_t *tensor_quantize_q8_0(const tensor_t *src)
+{
+	assert(src->type == TENSOR_F32);
+	assert(src->ndim == 2);
+	size_t rows = src->dim[0];
+	size_t cols = src->dim[1];
+	assert(cols % GGML_QK == 0);
+
+	size_t blocks_per_row = cols / GGML_QK;
+	size_t total_blocks = rows * blocks_per_row;
+	block_q8_0 *qdata = aligned_alloc(64, total_blocks * sizeof(block_q8_0));
+
+	for (size_t r = 0; r < rows; r++)
+		quantize_row_q8_0(&src->data[r * cols],
+				  &qdata[r * blocks_per_row], cols);
+
+	tensor_t *t = tensor_new_mapped(qdata, rows * cols, TENSOR_Q8_0);
+	t->ndim = 2;
+	t->dim[0] = rows;
+	t->dim[1] = cols;
+	return t;
+}
+
 static float dot_f32_q8_0(const float *x, const block_q8_0 *y, size_t n)
 {
 	assert(n % GGML_QK == 0);

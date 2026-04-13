@@ -37,6 +37,7 @@ tensor_t *tensor_new_2d(size_t d1, size_t d2, ...);
 tensor_t *tensor_new_3d(size_t d1, size_t d2, size_t d3, ...);
 void tensor_free(tensor_t *t);
 void *tensor_scratch(const tensor_t *t, size_t size);
+tensor_t *tensor_quantize_q8_0(const tensor_t *src);
 
 tensor_t *tensor_new_mapped(void *data, size_t totlen, enum tensor_dtype type);
 void tensor_free_mapped(const tensor_t *t);

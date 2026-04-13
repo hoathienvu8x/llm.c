@@ -1,6 +1,7 @@
 #include "llama.h"
 #include "nn.h"
 #include "matmul.h"
+#include "quant.h"
 #include "gguf.h"
 #include "vocab.h"
 #include "kvcache.h"
@@ -39,6 +40,7 @@ struct llama {
 
 	const tensor_t *wte;      /* token_embd.weight */
 	const tensor_t *lm_head;  /* output.weight */
+	int lm_head_owned;        /* 1 if lm_head was quantized by us */
 
 	struct llama_layer {
 		const tensor_t *attn_norm;  /* RMSNorm */
@@ -133,7 +135,12 @@ void *llama_load(struct gguf *g)
 	model->lm_head = gguf_tensor_2d(g, model->vocab_len, E, "output.weight");
 	if (!model->lm_head) {
 		fprintf(stderr, "llama: using tied embeddings (token_embd as lm_head)\n");
-		model->lm_head = model->wte;
+		if (model->wte->type == TENSOR_F32) {
+			model->lm_head = tensor_quantize_q8_0(model->wte);
+			model->lm_head_owned = 1;
+		} else {
+			model->lm_head = model->wte;
+		}
 	}
 	model->output_norm = gguf_tensor_1d(g, E, "output_norm.weight");
 
@@ -654,9 +661,14 @@ void llama_close(void *ctx)
 {
 	struct llama *model = ctx;
 
-	tensor_free_mapped(model->wte);
-	if (model->lm_head != model->wte)
+	if (model->lm_head_owned) {
+		free(model->lm_head->scratch);
+		free(model->lm_head->qdata);
+		free((void *)model->lm_head);
+	} else if (model->lm_head != model->wte) {
 		tensor_free_mapped(model->lm_head);
+	}
+	tensor_free_mapped(model->wte);
 	tensor_free_mapped(model->output_norm);
 
 	for (size_t i = 0; i < model->layers; i++) {

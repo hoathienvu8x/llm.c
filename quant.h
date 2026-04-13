@@ -84,6 +84,7 @@ typedef struct {
 	int16_t bsums[QK_K / 16];
 } block_q8_K;
 
+void quantize_row_q8_0(const float *x, block_q8_0 *y, size_t n);
 void dequant_row(const void *qdata, int type, size_t row, float *dst, size_t n);
 float dot_f32_quant(const float *x, const void *qdata, int type, size_t row, size_t n);
 
