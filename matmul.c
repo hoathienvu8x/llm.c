@@ -88,6 +88,19 @@ struct gemv_work {
 	size_t k, n;
 };
 
+static inline float dot_f32_f32(const float *x, const float *y, size_t n)
+{
+	vector_t acc;
+	vector_set(&acc, 0);
+	for_each_vec(i, n) {
+		vector_t vx, vy;
+		vector_load(&vx, (scalar_t *)&x[i]);
+		vector_load(&vy, (scalar_t *)&y[i]);
+		vector_fma(&acc, &vx, &vy, &acc);
+	}
+	return vector_reduce_sum(&acc);
+}
+
 static void transposed_gemv_thread_fn(void *arg, int tidx, int nthreads)
 {
 	struct gemv_work *w = arg;
@@ -96,16 +109,22 @@ static void transposed_gemv_thread_fn(void *arg, int tidx, int nthreads)
 	size_t j_end = j_start + chunk;
 	if (j_end > w->n) j_end = w->n;
 
-	for (size_t j = j_start; j < j_end; j++)
+	if (w->rhs->type == TENSOR_F32) {
+		for (size_t j = j_start; j < j_end; j++)
+			w->result[j] += dot_f32_f32(w->lhs,
+				&w->rhs->data[j * w->k], w->k);
+	} else {
+		for (size_t j = j_start; j < j_end; j++)
 #ifdef Q8_DOT
-		w->result[j] += dot_q8_quant(w->q8, w->lhs,
-					     w->rhs->qdata,
-					     w->rhs->type, j, w->k);
+			w->result[j] += dot_q8_quant(w->q8, w->lhs,
+						     w->rhs->qdata,
+						     w->rhs->type, j, w->k);
 #else
-		w->result[j] += dot_f32_quant(w->lhs,
-					      w->rhs->qdata,
-					      w->rhs->type, j, w->k);
+			w->result[j] += dot_f32_quant(w->lhs,
+						      w->rhs->qdata,
+						      w->rhs->type, j, w->k);
 #endif
+	}
 }
 
 /* result[m,n] = lhs[m,k] @ rhs[n,k].T parallelized along n */
@@ -231,13 +250,13 @@ void tensor_mma_transposed_2x2_tp(
 		.m = m, .k = k, .n = n,
 	};
 
-	if (m == 1 && rhs->type != TENSOR_F32) {
+	if (m == 1) {
 		struct gemv_work gw = {
 			.lhs = lhs->data, .rhs = rhs,
 			.result = ret->data, .k = k, .n = n,
 		};
 #ifdef Q8_DOT
-		if (k % QK_K == 0) {
+		if (rhs->type != TENSOR_F32 && k % QK_K == 0) {
 			block_q8_K *q8 = tensor_scratch(lhs, (k / QK_K) * sizeof(block_q8_K));
 			quantize_row_q8(lhs->data, q8, k);
 			gw.q8 = q8;
