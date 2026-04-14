@@ -429,6 +429,115 @@ int fused_gemv3(
 	return fused_gemv_run(in, segs, 3);
 }
 
+#ifdef FUSED_GEMV
+struct fused_ffn_work {
+	const scalar_t *input;
+#ifdef Q8_DOT
+	const block_q8_K *q8;
+#endif
+	scalar_t *gate;
+	scalar_t *up;
+	scalar_t *out;
+	const tensor_t *gate_w;
+	const tensor_t *up_w;
+	const tensor_t *down_w;
+	size_t k;          /* input dim (e.g. 4096) */
+	size_t intermediate; /* gate/up dim (e.g. 14336) */
+	size_t out_n;      /* output dim (e.g. 4096) */
+};
+
+static void fused_ffn_fn(void *arg, int tidx, int nthreads)
+{
+	struct fused_ffn_work *w = arg;
+	size_t inter = w->intermediate;
+
+	/* Phase 1: gate+up GEMV — each thread computes its share of rows */
+	size_t chunk = (inter + nthreads - 1) / nthreads;
+	size_t j_start = tidx * chunk;
+	size_t j_end = j_start + chunk;
+	if (j_end > inter) j_end = inter;
+
+	for (size_t j = j_start; j < j_end; j++) {
+#ifdef Q8_DOT
+		w->gate[j] = dot_q8_quant(w->q8, w->input,
+			w->gate_w->qdata, w->gate_w->type, j, w->k);
+		w->up[j] = dot_q8_quant(w->q8, w->input,
+			w->up_w->qdata, w->up_w->type, j, w->k);
+#else
+		w->gate[j] = dot_f32_quant(w->input,
+			w->gate_w->qdata, w->gate_w->type, j, w->k);
+		w->up[j] = dot_f32_quant(w->input,
+			w->up_w->qdata, w->up_w->type, j, w->k);
+#endif
+	}
+
+	/* Phase 2: silu(gate) * up — each thread does its portion */
+	for (size_t j = j_start; j < j_end; j++) {
+		float x = w->gate[j];
+		w->gate[j] = (x / (1.0f + expf(-x))) * w->up[j];
+	}
+
+	/* Barrier: all threads need the full intermediate for down proj */
+	thread_pool_barrier(nthreads);
+
+	/* Phase 3: down projection — each thread computes its share of output rows.
+	 * Uses float dot since the intermediate isn't Q8_K-quantized. */
+	chunk = (w->out_n + nthreads - 1) / nthreads;
+	j_start = tidx * chunk;
+	j_end = j_start + chunk;
+	if (j_end > w->out_n) j_end = w->out_n;
+
+	for (size_t j = j_start; j < j_end; j++)
+		w->out[j] = dot_f32_quant(w->gate,
+			w->down_w->qdata, w->down_w->type, j, inter);
+}
+#endif /* FUSED_GEMV */
+
+int fused_ffn_silu(
+	const tensor_t *in, tensor_t *out,
+	tensor_t *gate, const tensor_t *gate_w,
+	tensor_t *up, const tensor_t *up_w,
+	const tensor_t *down_w)
+{
+#ifdef FUSED_GEMV
+	if (in->dim[0] != 1)
+		return 0;
+	if (gate_w->type == TENSOR_F32 || up_w->type == TENSOR_F32 ||
+	    down_w->type == TENSOR_F32)
+		return 0;
+
+	size_t k = in->dim[1];
+	size_t inter = gate_w->dim[0];
+
+	struct fused_ffn_work w = {
+		.input = in->data,
+		.gate = gate->data,
+		.up = up->data,
+		.out = out->data,
+		.gate_w = gate_w,
+		.up_w = up_w,
+		.down_w = down_w,
+		.k = k,
+		.intermediate = inter,
+		.out_n = down_w->dim[0],
+	};
+
+#ifdef Q8_DOT
+	block_q8_K *q8 = NULL;
+	if (k % QK_K == 0) {
+		q8 = tensor_scratch(in, (k / QK_K) * sizeof(block_q8_K));
+		quantize_row_q8(in->data, q8, k);
+	}
+	w.q8 = q8;
+#endif
+
+	thread_pool_run(fused_ffn_fn, &w, 1, k, inter);
+	return 1;
+#else
+	return 0;
+#endif
+}
+
 #ifdef FLASH_ATTENTION
 #define FA_BLOCK 64
 

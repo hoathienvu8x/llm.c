@@ -38,6 +38,8 @@ struct thread_pool {
 
 	_Alignas(CACHE_LINE) atomic_int generation;
 	_Alignas(CACHE_LINE) atomic_int n_done;
+	_Alignas(CACHE_LINE) atomic_int barrier_count;
+	_Alignas(CACHE_LINE) atomic_int barrier_gen;
 };
 
 static struct thread_pool g_tp;
@@ -46,6 +48,22 @@ static inline void spin_wait_done(int n)
 {
 	while (atomic_load_explicit(&g_tp.n_done, memory_order_acquire) < n)
 		cpu_pause();
+}
+
+void thread_pool_barrier(int nthreads)
+{
+	int gen = atomic_load_explicit(&g_tp.barrier_gen, memory_order_relaxed);
+
+	if (atomic_fetch_add_explicit(&g_tp.barrier_count, 1,
+				      memory_order_acq_rel) == nthreads - 1) {
+		atomic_store_explicit(&g_tp.barrier_count, 0, memory_order_relaxed);
+		atomic_fetch_add_explicit(&g_tp.barrier_gen, 1,
+					  memory_order_release);
+	} else {
+		while (atomic_load_explicit(&g_tp.barrier_gen,
+					    memory_order_acquire) == gen)
+			cpu_pause();
+	}
 }
 
 static int detect_cores(int *cpus, int max)
@@ -166,6 +184,27 @@ static int pick_nthreads(size_t m, size_t k, size_t n)
 	return g_tp.nthreads;
 }
 
+#ifdef TP_STATS
+static uint64_t tp_work_ns, tp_idle_ns, tp_dispatch_count, tp_last_done;
+
+static inline uint64_t tp_now(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+__attribute__((destructor))
+static void thread_pool_stats(void)
+{
+	if (tp_dispatch_count)
+		fprintf(stderr, "thread_pool: %lu dispatches, work=%.1fms, idle=%.1fms (%.1f%%), avg_idle=%.1fus\n",
+			tp_dispatch_count, tp_work_ns / 1e6, tp_idle_ns / 1e6,
+			100.0 * tp_idle_ns / (tp_work_ns + tp_idle_ns),
+			(double)tp_idle_ns / tp_dispatch_count / 1e3);
+}
+#endif
+
 void thread_pool_run(tp_work_fn fn, void *arg,
 		     size_t m, size_t k, size_t n)
 {
@@ -176,6 +215,12 @@ void thread_pool_run(tp_work_fn fn, void *arg,
 		return;
 	}
 
+#ifdef TP_STATS
+	uint64_t now = tp_now();
+	if (tp_last_done)
+		tp_idle_ns += now - tp_last_done;
+#endif
+
 	g_tp.fn = fn;
 	g_tp.arg = arg;
 	g_tp.active_threads = nt;
@@ -184,4 +229,10 @@ void thread_pool_run(tp_work_fn fn, void *arg,
 	atomic_fetch_add_explicit(&g_tp.generation, 1, memory_order_release);
 
 	spin_wait_done(g_tp.nthreads);
+
+#ifdef TP_STATS
+	tp_last_done = tp_now();
+	tp_work_ns += tp_last_done - now;
+	tp_dispatch_count++;
+#endif
 }

@@ -30,6 +30,14 @@ int fused_gemv3(
 	tensor_t *out2, const tensor_t *w2,
 	tensor_t *out3, const tensor_t *w3);
 
+/* Fused FFN: gate+up GEMV, silu, element-wise mul, down GEMV in one
+ * dispatch. Returns 1 on success, 0 if not applicable. */
+int fused_ffn_silu(
+	const tensor_t *in, tensor_t *out,
+	tensor_t *gate, const tensor_t *gate_w,
+	tensor_t *up, const tensor_t *up_w,
+	const tensor_t *down_w);
+
 /*
  * Flash Attention (https://github.com/dao-ailab/flash-attention)
  *

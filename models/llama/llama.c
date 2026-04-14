@@ -371,6 +371,12 @@ static void dense_ffn(struct llama *model, tensor_t *input, tensor_t *output, si
 	tensor_resize(gate, T);
 	tensor_resize(up, T);
 
+	if (fused_ffn_silu(input, output,
+			   gate, hl->gate_exp[0],
+			   up, hl->up_exp[0],
+			   hl->down_exp[0]))
+		return;
+
 	if (!fused_gemv2(input,
 			       gate, hl->gate_exp[0],
 			       up, hl->up_exp[0])) {
