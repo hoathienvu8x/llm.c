@@ -5,6 +5,7 @@
 #include "gguf.h"
 #include "vocab.h"
 #include "kvcache.h"
+#include "thread_pool.h"
 #include "vector.h"
 #include "tensor_trace.h"
 #include "tools.h"
@@ -434,13 +435,15 @@ static void moe_ffn(struct llama *model, tensor_t *input, tensor_t *output, size
 			const tensor_t *up_w = hl->up_exp[expert_ids[e]];
 			const tensor_t *down_w = hl->down_exp[expert_ids[e]];
 
-			tensor_mma_transposed_2x2(expert_gate, &tok_in, gate_w, NULL);
-			tensor_mma_transposed_2x2(expert_up, &tok_in, up_w, NULL);
-
-			silu(expert_gate);
-			tensor_mul(expert_gate, expert_gate, expert_up);
-
-			tensor_mma_transposed_2x2(expert_out, expert_gate, down_w, NULL);
+			if (!fused_ffn_silu(&tok_in, expert_out,
+					    expert_gate, gate_w,
+					    expert_up, up_w, down_w)) {
+				tensor_mma_transposed_2x2(expert_gate, &tok_in, gate_w, NULL);
+				tensor_mma_transposed_2x2(expert_up, &tok_in, up_w, NULL);
+				silu(expert_gate);
+				tensor_mul(expert_gate, expert_gate, expert_up);
+				tensor_mma_transposed_2x2(expert_out, expert_gate, down_w, NULL);
+			}
 
 			tensor_t tok_out;
 			tensor_at(output, t, &tok_out);

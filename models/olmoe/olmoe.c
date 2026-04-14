@@ -384,17 +384,15 @@ static void moe_ffn(struct olmoe *model, tensor_t *input, tensor_t *output, size
 			tensor_at_q(hl->up_exps, expert_ids[e], &up_w);      /* (EI, E) */
 			tensor_at_q(hl->down_exps, expert_ids[e], &down_w);  /* (E, EI) */
 
-			/* gate = tok @ gate_w^T -> (1, EI) */
-			tensor_mma_transposed_2x2(expert_gate, &tok_in, &gate_w, NULL);
-			/* up = tok @ up_w^T -> (1, EI) */
-			tensor_mma_transposed_2x2(expert_up, &tok_in, &up_w, NULL);
-
-			/* SiLU(gate) * up */
-			silu(expert_gate);
-			tensor_mul(expert_gate, expert_gate, expert_up);
-
-			/* down = result @ down_w^T -> (1, E) */
-			tensor_mma_transposed_2x2(expert_out, expert_gate, &down_w, NULL);
+			if (!fused_ffn_silu(&tok_in, expert_out,
+					    expert_gate, &gate_w,
+					    expert_up, &up_w, &down_w)) {
+				tensor_mma_transposed_2x2(expert_gate, &tok_in, &gate_w, NULL);
+				tensor_mma_transposed_2x2(expert_up, &tok_in, &up_w, NULL);
+				silu(expert_gate);
+				tensor_mul(expert_gate, expert_gate, expert_up);
+				tensor_mma_transposed_2x2(expert_out, expert_gate, &down_w, NULL);
+			}
 
 			/* Accumulate: output[t] += weight * expert_out */
 			tensor_t tok_out;
