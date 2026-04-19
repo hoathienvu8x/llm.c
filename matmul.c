@@ -98,7 +98,10 @@ static inline float dot_f32_f32(const float *x, const float *y, size_t n)
 		vector_load(&vy, (scalar_t *)&y[i]);
 		vector_fma(&acc, &vx, &vy, &acc);
 	}
-	return vector_reduce_sum(&acc);
+	float sum = vector_reduce_sum(&acc);
+	for (size_t i = vector_batches(n); i < n; i++)
+		sum += x[i] * y[i];
+	return sum;
 }
 
 static void transposed_gemv_thread_fn(void *arg, int tidx, int nthreads)
@@ -126,6 +129,41 @@ static void transposed_gemv_thread_fn(void *arg, int tidx, int nthreads)
 #endif
 	}
 }
+
+#ifdef Q8_DOT
+/* Q8_DOT batched GEMV: result[m,n] = lhs[m,k] @ rhs[n,k].T
+ * Each thread handles a chunk of output columns for ALL m rows.
+ * Avoids dequant-to-float by using integer dots directly. */
+struct gemm_q8_work {
+	const scalar_t *lhs;
+	const block_q8_K *q8;
+	const tensor_t *rhs;
+	scalar_t *result;
+	size_t m, k, n;
+};
+
+static void transposed_gemm_q8_thread_fn(void *arg, int tidx, int nthreads)
+{
+	struct gemm_q8_work *w = arg;
+	size_t chunk = (w->n + nthreads - 1) / nthreads;
+	size_t j_start = tidx * chunk;
+	size_t j_end = j_start + chunk;
+	if (j_end > w->n) j_end = w->n;
+
+	size_t nb = w->k / QK_K;
+
+	for (size_t i = 0; i < w->m; i++) {
+		scalar_t *out = &w->result[i * w->n];
+		const block_q8_K *q8_row = &w->q8[i * nb];
+		const scalar_t *x = &w->lhs[i * w->k];
+
+		for (size_t j = j_start; j < j_end; j++)
+			out[j] += dot_q8_quant(q8_row, x,
+					       w->rhs->qdata,
+					       w->rhs->type, j, w->k);
+	}
+}
+#endif
 
 /* result[m,n] = lhs[m,k] @ rhs[n,k].T parallelized along n */
 static void transposed_thread_fn(void *arg, int tidx, int nthreads)
@@ -250,18 +288,35 @@ void tensor_mma_transposed_2x2_tp(
 		.m = m, .k = k, .n = n,
 	};
 
+#ifdef Q8_DOT
+	if (rhs->type != TENSOR_F32 && k % QK_K == 0) {
+		size_t nb = k / QK_K;
+		block_q8_K *q8 = tensor_scratch(lhs,
+			m * nb * sizeof(block_q8_K));
+		for (size_t i = 0; i < m; i++)
+			quantize_row_q8(&lhs->data[i * k],
+					&q8[i * nb], k);
+
+		if (m == 1) {
+			struct gemv_work gw = {
+				.lhs = lhs->data, .rhs = rhs, .q8 = q8,
+				.result = ret->data, .k = k, .n = n,
+			};
+			thread_pool_run(transposed_gemv_thread_fn, &gw, m, k, n);
+		} else {
+			struct gemm_q8_work gw = {
+				.lhs = lhs->data, .rhs = rhs, .q8 = q8,
+				.result = ret->data, .m = m, .k = k, .n = n,
+			};
+			thread_pool_run(transposed_gemm_q8_thread_fn, &gw, m, k, n);
+		}
+	} else
+#endif
 	if (m == 1) {
 		struct gemv_work gw = {
 			.lhs = lhs->data, .rhs = rhs,
 			.result = ret->data, .k = k, .n = n,
 		};
-#ifdef Q8_DOT
-		if (rhs->type != TENSOR_F32 && k % QK_K == 0) {
-			block_q8_K *q8 = tensor_scratch(lhs, (k / QK_K) * sizeof(block_q8_K));
-			quantize_row_q8(lhs->data, q8, k);
-			gw.q8 = q8;
-		}
-#endif
 		thread_pool_run(transposed_gemv_thread_fn, &gw, m, k, n);
 	} else {
 		thread_pool_run(transposed_thread_fn, &w, m, k, n);
